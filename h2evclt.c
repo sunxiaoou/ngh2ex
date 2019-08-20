@@ -1,0 +1,636 @@
+#ifdef HAVE_CONFIG_H
+#  include <config.h>
+#endif /* HAVE_CONFIG_H */
+
+#include <sys/types.h>
+#ifdef HAVE_UNISTD_H
+#  include <unistd.h>
+#endif /* HAVE_UNISTD_H */
+#ifdef HAVE_SYS_SOCKET_H
+#  include <sys/socket.h>
+#endif /* HAVE_SYS_SOCKET_H */
+#ifdef HAVE_NETINET_IN_H
+#  include <netinet/in.h>
+#endif /* HAVE_NETINET_IN_H */
+#include <netinet/tcp.h>
+#ifndef __sgi
+#  include <err.h>
+#endif
+#include <signal.h>
+#include <string.h>
+
+#include <event.h>
+#include <event2/event.h>
+#include <event2/bufferevent.h>
+#include <event2/dns.h>
+
+#include <nghttp2/nghttp2.h>
+
+#include "http-parser/http_parser.h"
+
+#define ARRLEN(x) (sizeof(x) / sizeof(x[0]))
+
+typedef struct {
+  /* The NULL-terminated URI string to retrieve. */
+  const char *uri;
+  /* Parsed result of the |uri| */
+  struct http_parser_url *u;
+  /* The authority portion of the |uri|, not NULL-terminated */
+  char *authority;
+  /* The path portion of the |uri|, including query, not
+     NULL-terminated */
+  char *path;
+  /* The length of the |authority| */
+  size_t authoritylen;
+  /* The length of the |path| */
+  size_t pathlen;
+  /* The stream ID of this stream */
+  int32_t stream_id;
+} http2_stream_data;
+
+typedef struct {
+  nghttp2_session *session;
+  struct evdns_base *dnsbase;
+  struct bufferevent *bev;
+  http2_stream_data *stream_data;
+} http2_session_data;
+
+static int Indent = 0;
+
+static void log_data(unsigned char *data, int len)
+{
+	unsigned char c;
+	char tmbuf[40];
+	int i, j, maxlen;
+
+  for(i = 0; i < len;){
+    fprintf(stderr, "%03x | ", i / 16);
+    maxlen = (len - i > 16) ? 16 : len - i;
+    for(j = 0; j < maxlen; j ++){
+      if(j && j % 4 == 0)
+        fprintf(stderr, " ");
+      fprintf(stderr, "%02X", *((unsigned char *)data + i + j));
+    }
+
+    for(; j < 16; j ++){
+      if(j && j % 4 == 0)
+        fprintf(stderr, " ");
+      fprintf(stderr, "  ");
+    }
+
+    fprintf(stderr, " | ");
+    for(j = 0; j < maxlen; j ++) {
+      c = *((unsigned char *)data + i + j);
+      if(c >= ' ' && c < 127 )
+        fprintf(stderr, "%c", c);
+      else
+        fprintf(stderr, ".");
+    }
+    for(; j < 16; j ++)
+      fprintf(stderr, " ");
+
+    i += maxlen;
+    if(i < len)
+      fprintf(stderr, "\n");
+  }
+
+  fprintf(stderr, "\n");
+}
+
+static http2_stream_data *create_http2_stream_data(const char *uri,
+                                                   struct http_parser_url *u) {
+
+  fprintf(stderr, "%*c{ create_http2_stream_data\n", 2 * Indent ++, ' ');
+
+  /* MAX 5 digits (max 65535) + 1 ':' + 1 NULL (because of snprintf) */
+  size_t extra = 7;
+  http2_stream_data *stream_data = malloc(sizeof(http2_stream_data));
+
+  stream_data->uri = uri;
+  stream_data->u = u;
+  stream_data->stream_id = -1;
+
+  stream_data->authoritylen = u->field_data[UF_HOST].len;
+  stream_data->authority = malloc(stream_data->authoritylen + extra);
+  memcpy(stream_data->authority, &uri[u->field_data[UF_HOST].off],
+         u->field_data[UF_HOST].len);
+  if (u->field_set & (1 << UF_PORT)) {
+    stream_data->authoritylen +=
+        (size_t)snprintf(stream_data->authority + u->field_data[UF_HOST].len,
+                         extra, ":%u", u->port);
+  }
+
+  /* If we don't have path in URI, we use "/" as path. */
+  stream_data->pathlen = 1;
+  if (u->field_set & (1 << UF_PATH)) {
+    stream_data->pathlen = u->field_data[UF_PATH].len;
+  }
+  if (u->field_set & (1 << UF_QUERY)) {
+    /* +1 for '?' character */
+    stream_data->pathlen += (size_t)(u->field_data[UF_QUERY].len + 1);
+  }
+
+  stream_data->path = malloc(stream_data->pathlen);
+  if (u->field_set & (1 << UF_PATH)) {
+    memcpy(stream_data->path, &uri[u->field_data[UF_PATH].off],
+           u->field_data[UF_PATH].len);
+  } else {
+    stream_data->path[0] = '/';
+  }
+  if (u->field_set & (1 << UF_QUERY)) {
+    stream_data->path[stream_data->pathlen - u->field_data[UF_QUERY].len - 1] =
+        '?';
+    memcpy(stream_data->path + stream_data->pathlen -
+               u->field_data[UF_QUERY].len,
+           &uri[u->field_data[UF_QUERY].off], u->field_data[UF_QUERY].len);
+  }
+
+  fprintf(stderr, "%*c} create_http2_stream_data\n", 2 * -- Indent, ' ');
+
+  return stream_data;
+}
+
+static void delete_http2_stream_data(http2_stream_data *stream_data) {
+  fprintf(stderr, "%*c{ delete_http2_stream_data\n", 2 * Indent ++, ' ');
+  free(stream_data->path);
+  free(stream_data->authority);
+  free(stream_data);
+  fprintf(stderr, "%*c} delete_http2_stream_data\n", 2 * -- Indent, ' ');
+}
+
+/* Initializes |session_data| */
+static http2_session_data *
+create_http2_session_data(struct event_base *evbase) {
+  fprintf(stderr, "%*c{ create_http2_session_data\n", 2 * Indent ++, ' ');
+
+  http2_session_data *session_data = malloc(sizeof(http2_session_data));
+
+  memset(session_data, 0, sizeof(http2_session_data));
+  session_data->dnsbase = evdns_base_new(evbase, 1);
+
+  fprintf(stderr, "%*c} create_http2_session_data\n", 2 * -- Indent, ' ');
+  return session_data;
+}
+
+static void delete_http2_session_data(http2_session_data *session_data) {
+  fprintf(stderr, "%*c{ delete_http2_session_data\n", 2 * Indent ++, ' ');
+
+  bufferevent_free(session_data->bev);
+  session_data->bev = NULL;
+  evdns_base_free(session_data->dnsbase, 1);
+  session_data->dnsbase = NULL;
+
+  fprintf(stderr, "%*c nghttp2_session_del\n", 2 * Indent, ' ');
+  nghttp2_session_del(session_data->session);
+  session_data->session = NULL;
+  if (session_data->stream_data) {
+    delete_http2_stream_data(session_data->stream_data);
+    session_data->stream_data = NULL;
+  }
+  free(session_data);
+
+  fprintf(stderr, "%*c} delete_http2_session_data\n", 2 * -- Indent, ' ');
+}
+
+static void print_header(FILE *f, const uint8_t *name, size_t namelen,
+                         const uint8_t *value, size_t valuelen) {
+  fwrite(name, 1, namelen, f);
+  fprintf(f, ": ");
+  fwrite(value, 1, valuelen, f);
+  fprintf(f, "\n");
+}
+
+/* Print HTTP headers to |f|. Please note that this function does not
+   take into account that header name and value are sequence of
+   octets, therefore they may contain non-printable characters. */
+static void print_headers(FILE *f, nghttp2_nv *nva, size_t nvlen) {
+  size_t i;
+  for (i = 0; i < nvlen; ++i) {
+    print_header(f, nva[i].name, nva[i].namelen, nva[i].value, nva[i].valuelen);
+  }
+  fprintf(f, "\n");
+}
+
+/* nghttp2_send_callback. Here we transmit the |data|, |length| bytes,
+   to the network. Because we are using libevent bufferevent, we just
+   write those bytes into bufferevent buffer. */
+static ssize_t send_callback(nghttp2_session *session, const uint8_t *data,
+                             size_t length, int flags, void *user_data) {
+  fprintf(stderr, "%*c{ send_callback\n", 2 * Indent ++, ' ');
+
+  http2_session_data *session_data = (http2_session_data *)user_data;
+  struct bufferevent *bev = session_data->bev;
+  (void)session;
+  (void)flags;
+
+  log_data((unsigned char *)data, length);
+  bufferevent_write(bev, data, length);
+
+  fprintf(stderr, "%*c} send_callback\n", 2 * -- Indent, ' ');
+  return (ssize_t)length;
+}
+
+/* nghttp2_on_header_callback: Called when nghttp2 library emits
+   single header name/value pair. */
+static int on_header_callback(nghttp2_session *session,
+                              const nghttp2_frame *frame, const uint8_t *name,
+                              size_t namelen, const uint8_t *value,
+                              size_t valuelen, uint8_t flags, void *user_data) {
+  fprintf(stderr, "%*c{ on_header_callback\n", 2 * Indent ++, ' ');
+  
+  http2_session_data *session_data = (http2_session_data *)user_data;
+  (void)session;
+  (void)flags;
+
+  switch (frame->hd.type) {
+  case NGHTTP2_HEADERS:
+    if (frame->headers.cat == NGHTTP2_HCAT_RESPONSE &&
+        session_data->stream_data->stream_id == frame->hd.stream_id) {
+      /* Print response headers for the initiated request. */
+      print_header(stderr, name, namelen, value, valuelen);
+      break;
+    }
+  }
+
+  fprintf(stderr, "%*c} on_header_callback\n", 2 * -- Indent, ' ');
+  return 0;
+}
+
+/* nghttp2_on_begin_headers_callback: Called when nghttp2 library gets
+   started to receive header block. */
+static int on_begin_headers_callback(nghttp2_session *session,
+                                     const nghttp2_frame *frame,
+                                     void *user_data) {
+  fprintf(stderr, "%*c{ on_begin_headers_callback\n", 2 * Indent ++, ' ');
+  
+  http2_session_data *session_data = (http2_session_data *)user_data;
+  (void)session;
+
+  switch (frame->hd.type) {
+  case NGHTTP2_HEADERS:
+    if (frame->headers.cat == NGHTTP2_HCAT_RESPONSE &&
+        session_data->stream_data->stream_id == frame->hd.stream_id) {
+      fprintf(stderr, "Response headers for stream ID=%d:\n",
+              frame->hd.stream_id);
+    }
+    break;
+  }
+
+  fprintf(stderr, "%*c} on_begin_headers_callback\n", 2 * -- Indent, ' ');
+  return 0;
+}
+
+/* nghttp2_on_frame_recv_callback: Called when nghttp2 library
+   received a complete frame from the remote peer. */
+static int on_frame_recv_callback(nghttp2_session *session,
+                                  const nghttp2_frame *frame, void *user_data) {
+  
+  fprintf(stderr, "%*c{ on_frame_recv_callback\n", 2 * Indent ++, ' ');
+
+  http2_session_data *session_data = (http2_session_data *)user_data;
+  (void)session;
+
+  switch (frame->hd.type) {
+  case NGHTTP2_HEADERS:
+    if (frame->headers.cat == NGHTTP2_HCAT_RESPONSE &&
+        session_data->stream_data->stream_id == frame->hd.stream_id) {
+      fprintf(stderr, "All headers received\n");
+    }
+    break;
+  }
+
+  fprintf(stderr, "%*c} on_frame_recv_callback\n", 2 * -- Indent, ' ');
+  return 0;
+}
+
+/* nghttp2_on_data_chunk_recv_callback: Called when DATA frame is
+   received from the remote peer. In this implementation, if the frame
+   is meant to the stream we initiated, print the received data in
+   stdout, so that the user can redirect its output to the file
+   easily. */
+static int on_data_chunk_recv_callback(nghttp2_session *session, uint8_t flags,
+                                       int32_t stream_id, const uint8_t *data,
+                                       size_t len, void *user_data) {
+  fprintf(stderr, "%*c{ on_data_chunk_callback\n", 2 * Indent ++, ' ');
+  
+  http2_session_data *session_data = (http2_session_data *)user_data;
+  (void)session;
+  (void)flags;
+
+  if (session_data->stream_data->stream_id == stream_id) {
+    fwrite(data, 1, len, stdout);
+  }
+
+  fprintf(stderr, "%*c} on_data_chunk_callback\n", 2 * -- Indent, ' ');
+  return 0;
+}
+
+/* nghttp2_on_stream_close_callback: Called when a stream is about to
+   closed. This example program only deals with 1 HTTP request (1
+   stream), if it is closed, we send GOAWAY and tear down the
+   session */
+static int on_stream_close_callback(nghttp2_session *session, int32_t stream_id,
+                                    uint32_t error_code, void *user_data) {
+  fprintf(stderr, "%*c{ on_stream_close_callback\n", 2 * Indent ++, ' ');
+  
+  http2_session_data *session_data = (http2_session_data *)user_data;
+  int rv;
+
+  if (session_data->stream_data->stream_id == stream_id) {
+    fprintf(stderr, "Stream %d closed with error_code=%u\n", stream_id,
+            error_code);
+    fprintf(stderr, "%*c nghttp2_session_terminate_session\n", 2 * Indent, ' ');        
+    rv = nghttp2_session_terminate_session(session, NGHTTP2_NO_ERROR);
+    if (rv != 0) {
+      fprintf(stderr, "%*c} on_stream_close_callback\n", 2 * -- Indent, ' ');
+      return NGHTTP2_ERR_CALLBACK_FAILURE;
+    }
+  }
+
+  fprintf(stderr, "%*c} on_stream_close_callback2\n", 2 * -- Indent, ' ');
+  return 0;
+}
+
+static void initialize_nghttp2_session(http2_session_data *session_data) {
+  fprintf(stderr, "%*c{ initialize_nghttp2_session\n", 2 * Indent ++, ' ');
+
+  nghttp2_session_callbacks *callbacks;
+
+  nghttp2_session_callbacks_new(&callbacks);
+
+  nghttp2_session_callbacks_set_send_callback(callbacks, send_callback);
+
+  nghttp2_session_callbacks_set_on_frame_recv_callback(callbacks,
+                                                       on_frame_recv_callback);
+
+  nghttp2_session_callbacks_set_on_data_chunk_recv_callback(
+      callbacks, on_data_chunk_recv_callback);
+
+  nghttp2_session_callbacks_set_on_stream_close_callback(
+      callbacks, on_stream_close_callback);
+
+  nghttp2_session_callbacks_set_on_header_callback(callbacks,
+                                                   on_header_callback);
+
+  nghttp2_session_callbacks_set_on_begin_headers_callback(
+      callbacks, on_begin_headers_callback);
+
+  fprintf(stderr, "%*c nghttp2_session_client_new\n", 2 * Indent, ' ');
+  nghttp2_session_client_new(&session_data->session, callbacks, session_data);
+
+  nghttp2_session_callbacks_del(callbacks);
+
+  fprintf(stderr, "%*c} initialize_nghttp2_session\n", 2 * -- Indent, ' ');
+}
+
+static void send_client_connection_header(http2_session_data *session_data) {
+  fprintf(stderr, "%*c{ send_client_connection_header\n", 2 * Indent ++, ' ');
+  
+  nghttp2_settings_entry iv[1] = {
+      {NGHTTP2_SETTINGS_MAX_CONCURRENT_STREAMS, 100}};
+  int rv;
+
+  fprintf(stderr, "%*c nghttp2_submit_settings\n", 2 * Indent, ' ');
+  /* client 24 bytes magic string will be sent by nghttp2 library */
+  rv = nghttp2_submit_settings(session_data->session, NGHTTP2_FLAG_NONE, iv,
+                               ARRLEN(iv));
+  if (rv != 0) {
+    errx(1, "Could not submit SETTINGS: %s", nghttp2_strerror(rv));
+  }
+
+  fprintf(stderr, "%*c} send_client_connection_header\n", 2 * -- Indent, ' ');
+}
+
+#define MAKE_NV(NAME, VALUE, VALUELEN)                                         \
+  {                                                                            \
+    (uint8_t *)NAME, (uint8_t *)VALUE, sizeof(NAME) - 1, VALUELEN,             \
+        NGHTTP2_NV_FLAG_NONE                                                   \
+  }
+
+#define MAKE_NV2(NAME, VALUE)                                                  \
+  {                                                                            \
+    (uint8_t *)NAME, (uint8_t *)VALUE, sizeof(NAME) - 1, sizeof(VALUE) - 1,    \
+        NGHTTP2_NV_FLAG_NONE                                                   \
+  }
+
+/* Send HTTP request to the remote peer */
+static void submit_request(http2_session_data *session_data) {
+  fprintf(stderr, "%*c{ submit_request\n", 2 * Indent ++, ' ');
+
+  int32_t stream_id;
+  http2_stream_data *stream_data = session_data->stream_data;
+  const char *uri = stream_data->uri;
+  const struct http_parser_url *u = stream_data->u;
+  nghttp2_nv hdrs[] = {
+      MAKE_NV2(":method", "GET"),
+      MAKE_NV(":scheme", &uri[u->field_data[UF_SCHEMA].off],
+              u->field_data[UF_SCHEMA].len),
+      MAKE_NV(":authority", stream_data->authority, stream_data->authoritylen),
+      MAKE_NV(":path", stream_data->path, stream_data->pathlen)};
+  fprintf(stderr, "Request headers:\n");
+  print_headers(stderr, hdrs, ARRLEN(hdrs));
+
+  fprintf(stderr, "%*c nghttp2_submit_request\n", 2 * Indent, ' ');
+  stream_id = nghttp2_submit_request(session_data->session, NULL, hdrs,
+                                     ARRLEN(hdrs), NULL, stream_data);
+  if (stream_id < 0) {
+    errx(1, "Could not submit HTTP request: %s", nghttp2_strerror(stream_id));
+  }
+
+  stream_data->stream_id = stream_id;
+
+  fprintf(stderr, "%*c} submit_request\n", 2 * -- Indent, ' ');
+}
+
+/* Serialize the frame and send (or buffer) the data to
+   bufferevent. */
+static int session_send(http2_session_data *session_data) {
+  fprintf(stderr, "%*c{ session_send\n", 2 * Indent ++, ' ');
+ 
+  int rv;
+
+  fprintf(stderr, "%*c nghttp2_session_send\n", 2 * Indent, ' ');
+  rv = nghttp2_session_send(session_data->session);
+  if (rv != 0) {
+    warnx("Fatal error: %s", nghttp2_strerror(rv));
+    fprintf(stderr, "%*c} session_send2\n", 2 * -- Indent, ' ');
+    return -1;
+  }
+
+  fprintf(stderr, "%*c} session_send2\n", 2 * -- Indent, ' ');
+  return 0;
+}
+
+/* readcb for bufferevent. Here we get the data from the input buffer
+   of bufferevent and feed them to nghttp2 library. This may invoke
+   nghttp2 callbacks. It may also queues the frame in nghttp2 session
+   context. To send them, we call session_send() in the end. */
+static void readcb(struct bufferevent *bev, void *ptr) {
+  fprintf(stderr, "%*c{ readcb\n", 2 * Indent ++, ' ');
+
+  http2_session_data *session_data = (http2_session_data *)ptr;
+  ssize_t readlen;
+  struct evbuffer *input = bufferevent_get_input(bev);
+  size_t datalen = evbuffer_get_length(input);
+  unsigned char *data = evbuffer_pullup(input, -1);
+
+  log_data(data, datalen);
+  fprintf(stderr, "%*c{ nghttp2_session_mem_recv\n", 2 * Indent ++, ' ');
+  readlen = nghttp2_session_mem_recv(session_data->session, data, datalen);
+  fprintf(stderr, "%*c} nghttp2_session_mem_recv\n", 2 * -- Indent, ' ');
+  if (readlen < 0) {
+    warnx("Fatal error: %s", nghttp2_strerror((int)readlen));
+    delete_http2_session_data(session_data);
+    fprintf(stderr, "%*c} readcb\n", 2 * -- Indent, ' ');
+    return;
+  }
+  if (evbuffer_drain(input, (size_t)readlen) != 0) {
+    warnx("Fatal error: evbuffer_drain failed");
+    delete_http2_session_data(session_data);
+    fprintf(stderr, "%*c} readcb2\n", 2 * -- Indent, ' ');
+    return;
+  }
+  if (session_send(session_data) != 0) {
+    delete_http2_session_data(session_data);
+    fprintf(stderr, "%*c} readcb3\n", 2 * -- Indent, ' ');
+    return;
+  }
+
+  fprintf(stderr, "%*c} readcb4\n", 2 * -- Indent, ' ');
+}
+
+/* writecb for bufferevent. To greaceful shutdown after sending or
+   receiving GOAWAY, we check the some conditions on the nghttp2
+   library and output buffer of bufferevent. If it indicates we have
+   no business to this session, tear down the connection. */
+static void writecb(struct bufferevent *bev, void *ptr) {
+  fprintf(stderr, "%*c{ writecb\n", 2 * Indent ++, ' ');
+
+  http2_session_data *session_data = (http2_session_data *)ptr;
+  (void)bev;
+
+  if (nghttp2_session_want_read(session_data->session) == 0 &&
+      nghttp2_session_want_write(session_data->session) == 0 &&
+      evbuffer_get_length(bufferevent_get_output(session_data->bev)) == 0) {
+    delete_http2_session_data(session_data);
+  }
+
+  fprintf(stderr, "%*c} writecb\n", 2 * -- Indent, ' ');
+}
+
+/* eventcb for bufferevent. For the purpose of simplicity and
+   readability of the example program, we omitted the certificate and
+   peer verification. After SSL/TLS handshake is over, initialize
+   nghttp2 library session, and send client connection header. Then
+   send HTTP request. */
+static void eventcb(struct bufferevent *bev, short events, void *ptr) {
+  fprintf(stderr, "%*c{ eventcb\n", 2 * Indent ++, ' ');
+
+  http2_session_data *session_data = (http2_session_data *)ptr;
+  if (events & BEV_EVENT_CONNECTED) {
+    int fd = bufferevent_getfd(bev);
+    int val = 1;
+    const unsigned char *alpn = NULL;
+    unsigned int alpnlen = 0;
+
+    fprintf(stderr, "Connected\n");
+
+    setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, (char *)&val, sizeof(val));
+    initialize_nghttp2_session(session_data);
+    send_client_connection_header(session_data);
+    submit_request(session_data);
+    if (session_send(session_data) != 0) {
+      delete_http2_session_data(session_data);
+    }
+
+    fprintf(stderr, "%*c} eventcb2\n", 2 * -- Indent, ' ');
+    return;
+  }
+  if (events & BEV_EVENT_EOF) {
+    warnx("Disconnected from the remote host");
+  } else if (events & BEV_EVENT_ERROR) {
+    warnx("Network error");
+  } else if (events & BEV_EVENT_TIMEOUT) {
+    warnx("Timeout");
+  }
+  delete_http2_session_data(session_data);
+  fprintf(stderr, "%*c} eventcb3\n", 2 * -- Indent, ' ');
+}
+
+/* Start connecting to the remote peer |host:port| */
+static void initiate_connection(struct event_base *evbase, 
+                                const char *host, uint16_t port,
+                                http2_session_data *session_data) {
+  fprintf(stderr, "%*c{ initiate_connection\n", 2 * Indent ++, ' ');
+  
+  int rv;
+  struct bufferevent *bev;
+  bev = bufferevent_socket_new(evbase, -1, BEV_OPT_DEFER_CALLBACKS | BEV_OPT_CLOSE_ON_FREE);
+  bufferevent_enable(bev, EV_READ | EV_WRITE);
+  bufferevent_setcb(bev, readcb, writecb, eventcb, session_data);
+  rv = bufferevent_socket_connect_hostname(bev, session_data->dnsbase,
+                                           AF_UNSPEC, host, port);
+
+  if (rv != 0) {
+    errx(1, "Could not connect to the remote host %s", host);
+  }
+  session_data->bev = bev;
+
+  fprintf(stderr, "%*c} initiate_connection\n", 2 * -- Indent, ' ');
+}
+
+/* Get resource denoted by the |uri|. The debug and error messages are
+   printed in stderr, while the response body is printed in stdout. */
+static void run(const char *uri) {
+  fprintf(stderr, "%*c{ run\n", 2 * Indent ++, ' ');
+
+  struct http_parser_url u;
+  char *host;
+  uint16_t port;
+  int rv;
+  struct event_base *evbase;
+  http2_session_data *session_data;
+
+  /* Parse the |uri| and stores its components in |u| */
+  rv = http_parser_parse_url(uri, strlen(uri), 0, &u);
+  if (rv != 0) {
+    errx(1, "Could not parse URI %s", uri);
+  }
+  host = strndup(&uri[u.field_data[UF_HOST].off], u.field_data[UF_HOST].len);
+  if (!(u.field_set & (1 << UF_PORT))) {
+    port = 443;
+  } else {
+    port = u.port;
+  }
+
+  evbase = event_base_new();
+
+  session_data = create_http2_session_data(evbase);
+  session_data->stream_data = create_http2_stream_data(uri, &u);
+
+  initiate_connection(evbase, host, port, session_data);
+  free(host);
+  host = NULL;
+
+  event_base_loop(evbase, 0);
+
+  event_base_free(evbase);
+
+  fprintf(stderr, "%*c} run\n", 2 * -- Indent, ' ');
+}
+
+int main(int argc, char **argv) {
+  struct sigaction act;
+
+  if (argc < 2) {
+    fprintf(stderr, "Usage: %s HTTPS_URI\n", argv[0]);
+    exit(EXIT_FAILURE);
+  }
+
+  memset(&act, 0, sizeof(struct sigaction));
+  act.sa_handler = SIG_IGN;
+  sigaction(SIGPIPE, &act, NULL);
+
+  run(argv[1]);
+  return 0;
+}

@@ -1,0 +1,50 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        /*
+        {
+            "name": "(lldb) client",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/client",
+            "args": ["https://localhost:12978/example.html"],
+            "stopAtEntry": false,
+            "cwd": "${workspaceFolder}",
+            "environment": [],
+            "externalConsole": false,
+            "MIMode": "lldb"
+        },
+        */
+
+        {
+            "name": "(lldb) libevent-server",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/libevent-server",
+            "args": ["12978", "server.key", "server.crt"],
+            "stopAtEntry": false,
+            "cwd": "${workspaceFolder}",
+            "environment": [],
+            "externalConsole": true,
+            "MIMode": "lldb"
+        },
+
+        /*
+        {
+            "name": "(lldb) libevent-client",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/libevent-client",
+            "args": ["https://localhost:12978/"],
+            "stopAtEntry": false,
+            "cwd": "${workspaceFolder}",
+            "environment": [],
+            "externalConsole": false,
+            "MIMode": "lldb"
+        }
+        */
+    ]
+}

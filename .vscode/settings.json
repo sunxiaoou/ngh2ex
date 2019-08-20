@@ -1,0 +1,6 @@
+{
+    "files.associations": {
+        "nghttp2.h": "c",
+        "listener.h": "c"
+    }
+}
