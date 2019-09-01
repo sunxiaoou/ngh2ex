@@ -16,6 +16,48 @@
 
 #define MAX_LINE 16384
 
+static int Indent = 0;
+
+static void log_data(unsigned char *data, int len)
+{
+  unsigned char c;
+  char tmbuf[40];
+  int i, j, maxlen;
+
+  for(i = 0; i < len;){
+    fprintf(stderr, "%03x | ", i / 16);
+    maxlen = (len - i > 16) ? 16 : len - i;
+    for(j = 0; j < maxlen; j ++){
+      if(j && j % 4 == 0)
+        fprintf(stderr, " ");
+      fprintf(stderr, "%02X", *((unsigned char *)data + i + j));
+    }
+
+    for(; j < 16; j ++){
+      if(j && j % 4 == 0)
+        fprintf(stderr, " ");
+      fprintf(stderr, "  ");
+    }
+
+    fprintf(stderr, " | ");
+    for(j = 0; j < maxlen; j ++) {
+      c = *((unsigned char *)data + i + j);
+      if(c >= ' ' && c < 127 )
+        fprintf(stderr, "%c", c);
+      else
+        fprintf(stderr, ".");
+    }
+    for(; j < 16; j ++)
+      fprintf(stderr, " ");
+
+    i += maxlen;
+    if(i < len)
+      fprintf(stderr, "\n");
+  }
+
+  fprintf(stderr, "\n");
+}
+
 char
 rot13_char(char c)
 {
@@ -34,8 +76,6 @@ struct fd_state {
     size_t buffer_used;
 
     int writing;
-    size_t n_written;
-    size_t write_upto;
 };
 
 struct fd_state *
@@ -44,8 +84,7 @@ alloc_fd_state(void)
     struct fd_state *state = malloc(sizeof(struct fd_state));
     if (!state)
         return NULL;
-    state->buffer_used = state->n_written = state->writing =
-        state->write_upto = 0;
+    state->buffer_used = state->writing = 0;
     return state;
 }
 
@@ -64,10 +103,13 @@ make_nonblocking(int fd)
 int
 do_read(int fd, struct fd_state *state)
 {
+    fprintf(stderr, "%*c{ do_read\n", 2 * Indent ++, ' ');
+
     char buf[1024];
     int i;
     ssize_t result;
-    while (1) {
+    while (state->buffer_used < sizeof(state->buffer)) {
+        /*
         result = recv(fd, buf, sizeof(buf), 0);
         if (result <= 0)
             break;
@@ -75,51 +117,79 @@ do_read(int fd, struct fd_state *state)
         for (i=0; i < result; ++i)  {
             if (state->buffer_used < sizeof(state->buffer))
                 state->buffer[state->buffer_used++] = rot13_char(buf[i]);
-            if (buf[i] == '\n') {
-                state->writing = 1;
-                state->write_upto = state->buffer_used;
+        }
+        */
+        result = recv(fd, state->buffer + state->buffer_used,
+                sizeof(state->buffer) - state->buffer_used, 0);
+        if (result < 0) {
+            if (errno == EAGAIN) {
+                /* descriptor is marked O_NONBLOCK and no data is waiting to be received */
+                break;
+            }
+            else {
+                fprintf(stderr, "%*c} do_read\n", 2 * -- Indent, ' ');
+                return -1;
             }
         }
+        
+        else if (result == 0) {
+            /* no messages are available to be received and the peer has performed an orderly shutdown */
+            fprintf(stderr, "%*c} do_read2\n", 2 * -- Indent, ' ');
+            return 1;
+        }
+
+        state->buffer_used += result;
     }
 
-    if (result == 0) {  /* no messages are available to be received and the peer has performed an orderly shutdown */    
-        return 1;
-    } else if (result < 0) {
-        if (errno == EAGAIN)    /* descriptor is marked O_NONBLOCK and no data is waiting to be received */
-            return 0;
-        return -1;
+    log_data((unsigned char *)state->buffer, state->buffer_used);
+    for (i=0; i < state->buffer_used; ++ i)  {
+        state->buffer[i] = rot13_char(state->buffer[i]);
     }
-
+    state->writing = 1;
+    
+    fprintf(stderr, "%*c} do_read3\n", 2 * -- Indent, ' ');
     return 0;
 }
 
 int
 do_write(int fd, struct fd_state *state)
 {
-    while (state->n_written < state->write_upto) {
-        ssize_t result = send(fd, state->buffer + state->n_written,
-                              state->write_upto - state->n_written, 0);
+    fprintf(stderr, "%*c{ do_write\n", 2 * Indent ++, ' ');
+
+    size_t n_written = 0;
+    while (n_written < state->buffer_used) {
+        ssize_t result = send(fd, state->buffer + n_written,
+                              state->buffer_used - n_written, 0);
         if (result < 0) {
-            if (errno == EAGAIN)
+            if (errno == EAGAIN) {
+                fprintf(stderr, "%*c} do_write\n", 2 * -- Indent, ' ');
                 return 0;
+            }
+
+            fprintf(stderr, "%*c} do_write2\n", 2 * -- Indent, ' ');    
             return -1;
         }
         assert(result != 0);
 
-        state->n_written += result;
+        n_written += result;
     }
 
-    if (state->n_written == state->buffer_used)
-        state->n_written = state->write_upto = state->buffer_used = 0;
+    log_data((unsigned char *)state->buffer, n_written);
+
+    if (n_written == state->buffer_used)
+        state->buffer_used = 0;
 
     state->writing = 0;
 
+    fprintf(stderr, "%*c} do_write3\n", 2 * -- Indent, ' ');
     return 0;
 }
 
 void
 run(void)
 {
+    fprintf(stderr, "%*c{ run\n", 2 * Indent ++, ' ');
+
     int listener;
     struct fd_state *state[FD_SETSIZE];
     struct sockaddr_in sin;
@@ -145,11 +215,13 @@ run(void)
 
     if (bind(listener, (struct sockaddr*)&sin, sizeof(sin)) < 0) {
         perror("bind");
+        fprintf(stderr, "%*c} run\n", 2 * -- Indent, ' ');
         return;
     }
 
     if (listen(listener, 16)<0) {
         perror("listen");
+        fprintf(stderr, "%*c} run2\n", 2 * -- Indent, ' ');
         return;
     }
 
@@ -179,6 +251,7 @@ run(void)
 
         if (select(maxfd+1, &readset, &writeset, &exset, NULL) < 0) {
             perror("select");
+            fprintf(stderr, "%*c} run3\n", 2 * -- Indent, ' ');
             return;
         }
 
@@ -215,13 +288,18 @@ run(void)
             }
         }
     }
+
+    fprintf(stderr, "%*c} run4\n", 2 * -- Indent, ' ');
 }
 
 int
 main(int c, char **v)
 {
+    fprintf(stderr, "{ main\n"); Indent ++;
+
     setvbuf(stdout, NULL, _IONBF, 0);
 
     run();
+     -- Indent; fprintf(stderr, "} main\n");
     return 0;
 }
