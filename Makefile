@@ -74,5 +74,10 @@ rot13svr3.o: rot13svr3.c
 rot13svr3: rot13svr3.o
 	$(CC) -o $@ $< $(LDFLAG)
 
+h2clt.o: h2clt.c
+	$(CC) $(CFLAG) $<
+h2clt: h2clt.o
+	$(CC) -o $@ $<
+
 clean:
 	rm -f *.o $(EXES)
