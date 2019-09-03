@@ -77,7 +77,8 @@ rot13svr3: rot13svr3.o
 h2clt.o: h2clt.c
 	$(CC) $(CFLAG) $<
 h2clt: h2clt.o
-	$(CC) -o $@ $<
+h2clt: h2clt.o http_parser.o cencode.o
+	$(CC) -o $@ $< http_parser.o cencode.o $(LDFLAG)
 
 clean:
 	rm -f *.o $(EXES)
