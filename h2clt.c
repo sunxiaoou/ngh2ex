@@ -258,9 +258,32 @@ static int initialize_nghttp2_session(http2_session_data *psession, unsigned cha
   }
 
   fprintf(stderr, "%*c} initialize_nghttp2_session3\n", 2 * -- Indent, ' ');
-
   return 0;
 }
+
+static int session_send(http2_session_data *psession, int sock) {
+  fprintf(stderr, "%*c} session_send\n", 2 * -- Indent, ' ');
+
+  const uint8_t *sndbuf;
+  int len;
+
+  while(1) {
+    len = nghttp2_session_mem_send(psession->session, &sndbuf);
+    if (len == 0)
+      break;
+    if (len < 0) {
+      printf("nghttp2_session_mem_send returns error(%s)", nghttp2_strerror(len));
+      return -1;
+    }
+    log_data((unsigned char *)sndbuf, len);
+    len = write(sock, sndbuf, len);
+    printf("writen(%d)\n", len);
+  }
+
+  fprintf(stderr, "%*c} session_send\n", 2 * -- Indent, ' ');
+  return 0;
+}
+
 
 int main(int argc, char const *argv[])
 {
@@ -296,10 +319,10 @@ int main(int argc, char const *argv[])
     return -1;
   }
 
-  char sndbuf[1024];
-  make_upgrade_request(sndbuf, settings, len);
-  log_data((unsigned char *)sndbuf, strlen(sndbuf));
-  int rc = write(sock, sndbuf, strlen(sndbuf));
+  char req[1024];
+  make_upgrade_request(req, settings, len);
+  log_data((unsigned char *)req, strlen(req));
+  int rc = write(sock, req, strlen(req));
   printf("writen(%d)\n", rc);
 
   char rcvbuf[1024] = {0};
@@ -311,19 +334,10 @@ int main(int argc, char const *argv[])
   h2session.stream_id = 1;
   initialize_nghttp2_session(&h2session, settings, len);
 
-  const uint8_t *magic;
-  len = nghttp2_session_mem_send(h2session.session, &magic);
-  if (len <= 0) {
-    printf("No data is available to send: %s", nghttp2_strerror(len));
-    return -1;
-  }
-  log_data((unsigned char *)magic, len);
-  len = write(sock, magic, len);
-  printf("writen(%d)\n", len);
-
+  session_send(&h2session, sock);
+  
   len = read(sock, (unsigned char *)rcvbuf, sizeof(rcvbuf));
   printf("read(%d)\n", len);
-
   fprintf(stderr, "%*c{ nghttp2_session_mem_recv()\n", 2 * Indent ++, ' ');
   len = nghttp2_session_mem_recv(h2session.session, (uint8_t *)rcvbuf, len);
   fprintf(stderr, "%*c} nghttp2_session_mem_recv()\n", 2 * -- Indent, ' ');
@@ -332,11 +346,15 @@ int main(int argc, char const *argv[])
     return -1;
   }
 
+  /*
   static unsigned char buf3[] = {
     0x00, 0x00, 0x00, 0x04, 0x01, 0x00, 0x00, 0x00, 0x00
   };
   rc = write(sock, buf3, sizeof(buf3));
   printf("writen(%d)\n", rc);
+  */
+
+  session_send(&h2session, sock);
 
   int i;
   for (i = 0; i < 4; i ++) {
