@@ -9,9 +9,16 @@
 
 #include "b64/cencode.h"
 
+int Indent = 0;
 #define PORT 7001
 
-void log_data(unsigned char *data, int len)
+typedef struct {
+  int sock;
+  int stream_id;
+  nghttp2_session *session;
+} http2_session_data;
+
+static void log_data(unsigned char *data, int len)
 {
 	unsigned char c;
 	char tmbuf[40];
@@ -52,24 +59,16 @@ void log_data(unsigned char *data, int len)
   fprintf(stderr, "\n");
 }
 
-void make_upgrade_str(char *buf) {
-  nghttp2_settings_entry iv[1] = {
-	   {NGHTTP2_SETTINGS_MAX_CONCURRENT_STREAMS, 100}};
-  int rv;
+static void make_upgrade_request(char *buf, unsigned char *settings, int slen) {
+  fprintf(stderr, "%*c{ make_upgrade_request\n", 2 * Indent ++, ' ');
 
-  uint8_t settings_payload[128];
   char b64[128];
-  rv = nghttp2_pack_settings_payload(settings_payload, sizeof(settings_payload), iv, 1);
-  if (rv <= 0) {
-    printf("Could not pack SETTINGS: %s", nghttp2_strerror(rv));
-  }
-
   char *c = b64;
   int cnt = 0;
   base64_encodestate s;
 
   base64_init_encodestate(&s);
-  cnt = base64_encode_block((char *)settings_payload, rv, c, &s);
+  cnt = base64_encode_block((char *)settings, slen, c, &s);
   c += cnt;
   cnt = base64_encode_blockend(c, &s);
   // c += cnt;
@@ -91,14 +90,185 @@ void make_upgrade_str(char *buf) {
   cnt = sprintf(c, "user-agent: nghttp2/%s\r\n\r\n", NGHTTP2_VERSION);
   c += cnt;
   *c = 0;
+
+  fprintf(stderr, "%*c} make_upgrade_request\n", 2 * -- Indent, ' ');
+}
+
+static ssize_t send_callback(nghttp2_session *session, const uint8_t *data, size_t length, int flags, void *user_data) {
+  fprintf(stderr, "%*c{ send_callback\n", 2 * Indent ++, ' ');
+
+  http2_session_data *session_data = (http2_session_data *)user_data;
+  (void)session;
+  (void)flags;
+
+  log_data((unsigned char *)data, length);
+  // bufferevent_write(bev, data, length);
+
+  fprintf(stderr, "%*c} send_callback\n", 2 * -- Indent, ' ');
+  return (ssize_t)length;
+}
+
+static void print_header(FILE *f, const uint8_t *name, size_t namelen,
+                         const uint8_t *value, size_t valuelen) {
+  fwrite(name, 1, namelen, f);
+  fprintf(f, ": ");
+  fwrite(value, 1, valuelen, f);
+  fprintf(f, "\n");
+}
+
+static int on_header_callback(nghttp2_session *session,
+                              const nghttp2_frame *frame, const uint8_t *name,
+                              size_t namelen, const uint8_t *value,
+                              size_t valuelen, uint8_t flags, void *user_data) {
+  fprintf(stderr, "%*c{ on_header_callback\n", 2 * Indent ++, ' ');
+  
+  http2_session_data *session_data = (http2_session_data *)user_data;
+  (void)session;
+  (void)flags;
+
+  switch (frame->hd.type) {
+  case NGHTTP2_HEADERS:
+    if (frame->headers.cat == NGHTTP2_HCAT_RESPONSE && session_data->stream_id == frame->hd.stream_id) {
+      /* Print response headers for the initiated request. */
+      print_header(stderr, name, namelen, value, valuelen);
+      break;
+    }
+  }
+
+  fprintf(stderr, "%*c} on_header_callback\n", 2 * -- Indent, ' ');
+  return 0;
+}
+
+/* nghttp2_on_begin_headers_callback: Called when nghttp2 library gets
+   started to receive header block. */
+static int on_begin_headers_callback(nghttp2_session *session,
+                                     const nghttp2_frame *frame,
+                                     void *user_data) {
+  fprintf(stderr, "%*c{ on_begin_headers_callback\n", 2 * Indent ++, ' ');
+  
+  http2_session_data *session_data = (http2_session_data *)user_data;
+  (void)session;
+
+  switch (frame->hd.type) {
+  case NGHTTP2_HEADERS:
+    if (frame->headers.cat == NGHTTP2_HCAT_RESPONSE && session_data->stream_id == frame->hd.stream_id) {
+      fprintf(stderr, "Response headers for stream ID=%d:\n", frame->hd.stream_id);
+    }
+    break;
+  }
+
+  fprintf(stderr, "%*c} on_begin_headers_callback\n", 2 * -- Indent, ' ');
+  return 0;
+}
+
+/* nghttp2_on_frame_recv_callback: Called when nghttp2 library
+   received a complete frame from the remote peer. */
+static int on_frame_recv_callback(nghttp2_session *session, const nghttp2_frame *frame, void *user_data) {
+  
+  fprintf(stderr, "%*c{ on_frame_recv_callback\n", 2 * Indent ++, ' ');
+
+  http2_session_data *session_data = (http2_session_data *)user_data;
+  (void)session;
+
+  switch (frame->hd.type) {
+  case NGHTTP2_HEADERS:
+    if (frame->headers.cat == NGHTTP2_HCAT_RESPONSE && session_data->stream_id == frame->hd.stream_id) {
+      fprintf(stderr, "All headers received\n");
+    }
+    break;
+  }
+
+  fprintf(stderr, "%*c} on_frame_recv_callback\n", 2 * -- Indent, ' ');
+  return 0;
+}
+
+/* nghttp2_on_data_chunk_recv_callback: Called when DATA frame is
+   received from the remote peer. In this implementation, if the frame
+   is meant to the stream we initiated, print the received data in
+   stdout, so that the user can redirect its output to the file
+   easily. */
+static int on_data_chunk_recv_callback(nghttp2_session *session, uint8_t flags,
+                                       int32_t stream_id, const uint8_t *data,
+                                       size_t len, void *user_data) {
+  fprintf(stderr, "%*c{ on_data_chunk_callback\n", 2 * Indent ++, ' ');
+  
+  http2_session_data *session_data = (http2_session_data *)user_data;
+  (void)session;
+  (void)flags;
+
+  if (session_data->stream_id == stream_id) {
+    log_data((unsigned char *)data, len);
+  }
+
+  fprintf(stderr, "%*c} on_data_chunk_callback\n", 2 * -- Indent, ' ');
+  return 0;
+}
+
+/* nghttp2_on_stream_close_callback: Called when a stream is about to
+   closed. This example program only deals with 1 HTTP request (1
+   stream), if it is closed, we send GOAWAY and tear down the
+   session */
+static int on_stream_close_callback(nghttp2_session *session, int32_t stream_id,
+                                    uint32_t error_code, void *user_data) {
+  fprintf(stderr, "%*c{ on_stream_close_callback\n", 2 * Indent ++, ' ');
+  
+  http2_session_data *session_data = (http2_session_data *)user_data;
+  int rv;
+
+  if (session_data->stream_id == stream_id) {
+    fprintf(stderr, "Stream %d closed with error_code=%u\n", stream_id, error_code);
+    fprintf(stderr, "%*c nghttp2_session_terminate_session\n", 2 * Indent, ' ');        
+    rv = nghttp2_session_terminate_session(session, NGHTTP2_NO_ERROR);
+    if (rv != 0) {
+      fprintf(stderr, "%*c} on_stream_close_callback\n", 2 * -- Indent, ' ');
+      return NGHTTP2_ERR_CALLBACK_FAILURE;
+    }
+  }
+
+  fprintf(stderr, "%*c} on_stream_close_callback2\n", 2 * -- Indent, ' ');
+  return 0;
+}
+
+static int initialize_nghttp2_session(http2_session_data *psession, unsigned char *settings, int slen) {
+  fprintf(stderr, "%*c{ initialize_nghttp2_session\n", 2 * Indent ++, ' ');
+
+  nghttp2_session_callbacks *callbacks;
+
+  nghttp2_session_callbacks_new(&callbacks);
+  nghttp2_session_callbacks_set_send_callback(callbacks, send_callback);
+  nghttp2_session_callbacks_set_on_frame_recv_callback(callbacks, on_frame_recv_callback);
+  nghttp2_session_callbacks_set_on_data_chunk_recv_callback(callbacks, on_data_chunk_recv_callback);
+  nghttp2_session_callbacks_set_on_stream_close_callback(callbacks, on_stream_close_callback);
+  nghttp2_session_callbacks_set_on_header_callback(callbacks, on_header_callback);
+  nghttp2_session_callbacks_set_on_begin_headers_callback(callbacks, on_begin_headers_callback);
+
+  fprintf(stderr, "%*c nghttp2_session_client_new\n", 2 * Indent, ' ');
+  int rc = nghttp2_session_client_new(&psession->session, callbacks, psession);
+  if (rc != 0) {
+    fprintf(stderr, "%*c} initialize_nghttp2_session\n", 2 * -- Indent, ' ');
+    return -1;
+  }
+  nghttp2_session_callbacks_del(callbacks);
+
+  fprintf(stderr, "%*c nghttp2_session_upgrade2\n", 2 * Indent, ' ');
+  rc = nghttp2_session_upgrade2(psession->session, settings, slen, 0, NULL);
+  if (rc != 0) {
+    fprintf(stderr, "%*c} initialize_nghttp2_session2\n", 2 * -- Indent, ' ');
+    return -1;
+  }
+
+  fprintf(stderr, "%*c} initialize_nghttp2_session3\n", 2 * -- Indent, ' ');
+
+  return 0;
 }
 
 int main(int argc, char const *argv[])
 {
+  fprintf(stderr, "{ main\n"); Indent ++;
+
   int sock = 0, valread;
   struct sockaddr_in serv_addr;
   char *hello = "Hello from client";
-  char buffer[1024] = {0};
   if ((sock = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
     printf("\n Socket creation error \n");
     return -1;
@@ -118,44 +288,49 @@ int main(int argc, char const *argv[])
     return -1;
   }
 
-  /*
-  static unsigned char sbuf[] = {
-    0x47, 0x45, 0x54, 0x20, 0x2f, 0x73, 0x76, 0x6c, 0x74, 0x32, 0x39, 0x38, 0x30, 0x35, 0x35, 0x34,
-    0x36, 0x20, 0x48, 0x54, 0x54, 0x50, 0x2f, 0x31, 0x2e, 0x31, 0x0d, 0x0a, 0x68, 0x6f, 0x73, 0x74,
-    0x3a, 0x20, 0x73, 0x6c, 0x63, 0x30, 0x39, 0x77, 0x73, 0x7a, 0x2e, 0x75, 0x73, 0x2e, 0x6f, 0x72,
-    0x61, 0x63, 0x6c, 0x65, 0x2e, 0x63, 0x6f, 0x6d, 0x3a, 0x37, 0x30, 0x30, 0x31, 0x0d, 0x0a, 0x63,
-    0x6f, 0x6e, 0x6e, 0x65, 0x63, 0x74, 0x69, 0x6f, 0x6e, 0x3a, 0x20, 0x55, 0x70, 0x67, 0x72, 0x61,
-    0x64, 0x65, 0x2c, 0x20, 0x48, 0x54, 0x54, 0x50, 0x32, 0x2d, 0x53, 0x65, 0x74, 0x74, 0x69, 0x6e,
-    0x67, 0x73, 0x0d, 0x0a, 0x75, 0x70, 0x67, 0x72, 0x61, 0x64, 0x65, 0x3a, 0x20, 0x68, 0x32, 0x63,
-    0x0d, 0x0a, 0x68, 0x74, 0x74, 0x70, 0x32, 0x2d, 0x73, 0x65, 0x74, 0x74, 0x69, 0x6e, 0x67, 0x73,
-    0x3a, 0x20, 0x41, 0x41, 0x4d, 0x41, 0x41, 0x41, 0x42, 0x6b, 0x41, 0x41, 0x51, 0x41, 0x41, 0x50,
-    0x5f, 0x5f, 0x0d, 0x0a, 0x61, 0x63, 0x63, 0x65, 0x70, 0x74, 0x3a, 0x20, 0x2a, 0x2f, 0x2a, 0x0d,
-    0x0a, 0x75, 0x73, 0x65, 0x72, 0x2d, 0x61, 0x67, 0x65, 0x6e, 0x74, 0x3a, 0x20, 0x6e, 0x67, 0x68,
-    0x74, 0x74, 0x70, 0x32, 0x2f, 0x31, 0x2e, 0x33, 0x38, 0x2e, 0x30, 0x0d, 0x0a, 0x0d, 0x0a
-  };
+  nghttp2_settings_entry iv[1] = {{NGHTTP2_SETTINGS_MAX_CONCURRENT_STREAMS, 100}};
+  unsigned char settings[128];
+  int len = nghttp2_pack_settings_payload(settings, sizeof(settings), iv, 1);
+  if (len <= 0) {
+    printf("Could not pack SETTINGS: %s", nghttp2_strerror(len));
+    return -1;
+  }
 
-  log_data(sbuf, sizeof(sbuf));
-  */
-
-  char buf[1024];
-  make_upgrade_str(buf);
-  log_data((unsigned char *)buf, strlen(buf));
-  int rc = write(sock, buf, strlen(buf));
+  char sndbuf[1024];
+  make_upgrade_request(sndbuf, settings, len);
+  log_data((unsigned char *)sndbuf, strlen(sndbuf));
+  int rc = write(sock, sndbuf, strlen(sndbuf));
   printf("writen(%d)\n", rc);
 
-  rc = read(sock, (unsigned char *)buffer, sizeof(buffer));
+  char rcvbuf[1024] = {0};
+  rc = read(sock, (unsigned char *)rcvbuf, sizeof(rcvbuf));
   printf("read(%d)\n", rc);
 
-  static unsigned char buf2[] = {
-    0x50, 0x52, 0x49, 0x20, 0x2a, 0x20, 0x48, 0x54, 0x54, 0x50, 0x2f, 0x32, 0x2e, 0x30, 0x0d, 0x0a,
-    0x0d, 0x0a, 0x53, 0x4d, 0x0d, 0x0a, 0x0d, 0x0a, 0x00, 0x00, 0x0c, 0x04, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x64, 0x00, 0x04, 0x00, 0x00, 0xff, 0xff    
-  };
-  rc = write(sock, buf2, sizeof(buf2));
-  printf("writen(%d)\n", rc);
+  http2_session_data h2session;
+  h2session.sock = sock;
+  h2session.stream_id = 1;
+  initialize_nghttp2_session(&h2session, settings, len);
 
-  rc = read(sock, (unsigned char *)buffer, sizeof(buffer));
-  printf("read(%d)\n", rc);
+  const uint8_t *magic;
+  len = nghttp2_session_mem_send(h2session.session, &magic);
+  if (len <= 0) {
+    printf("No data is available to send: %s", nghttp2_strerror(len));
+    return -1;
+  }
+  log_data((unsigned char *)magic, len);
+  len = write(sock, magic, len);
+  printf("writen(%d)\n", len);
+
+  len = read(sock, (unsigned char *)rcvbuf, sizeof(rcvbuf));
+  printf("read(%d)\n", len);
+
+  fprintf(stderr, "%*c{ nghttp2_session_mem_recv()\n", 2 * Indent ++, ' ');
+  len = nghttp2_session_mem_recv(h2session.session, (uint8_t *)rcvbuf, len);
+  fprintf(stderr, "%*c} nghttp2_session_mem_recv()\n", 2 * -- Indent, ' ');
+  if (len < 0) {
+    printf("Recevied negative error : %s", nghttp2_strerror(len));
+    return -1;
+  }
 
   static unsigned char buf3[] = {
     0x00, 0x00, 0x00, 0x04, 0x01, 0x00, 0x00, 0x00, 0x00
@@ -165,9 +340,10 @@ int main(int argc, char const *argv[])
 
   int i;
   for (i = 0; i < 4; i ++) {
-    rc = read(sock, (unsigned char *)buffer, sizeof(buffer));
+    rc = read(sock, (unsigned char *)rcvbuf, sizeof(rcvbuf));
     printf("read(%d)\n", rc);
   }
 
+  -- Indent; fprintf(stderr, "} main\n");
   return 0;
 }
