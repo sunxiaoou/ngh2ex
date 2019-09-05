@@ -1,16 +1,16 @@
 // Client side C/C++ program to demonstrate Socket programming
+#include <errno.h>
+#include <netdb.h>
 #include <stdio.h>
-#include <sys/socket.h>
-#include <arpa/inet.h>
 #include <unistd.h>
 #include <string.h>
 
 #include <nghttp2/nghttp2.h>
 
+#include "http-parser/http_parser.h"
 #include "b64/cencode.h"
 
 int Indent = 0;
-#define PORT 7001
 
 typedef struct {
   int sock;
@@ -59,7 +59,41 @@ static void log_data(unsigned char *data, int len)
   fprintf(stderr, "\n");
 }
 
-static void make_upgrade_request(char *buf, unsigned char *settings, int slen) {
+static int connect_to(const char *host, uint16_t port) {
+  struct addrinfo hints;
+  int fd = -1;
+  int rv;
+  char service[NI_MAXSERV];
+  struct addrinfo *res, *rp;
+
+  snprintf(service, sizeof(service), "%u", port);
+  memset(&hints, 0, sizeof(struct addrinfo));
+  hints.ai_family = AF_UNSPEC;
+  hints.ai_socktype = SOCK_STREAM;
+  rv = getaddrinfo(host, service, &hints, &res);
+  if (rv != 0) {
+	  fprintf(stderr, "FATAL: getaddrinfo: %s\n", gai_strerror(rv));
+	  return -1;
+  }
+  for (rp = res; rp; rp = rp->ai_next) {
+    fd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
+    if (fd == -1) {
+      continue;
+    }
+    while ((rv = connect(fd, rp->ai_addr, rp->ai_addrlen)) == -1 && errno == EINTR)
+      ;
+    if (rv == 0) {
+      break;
+    }
+    close(fd);
+    fd = -1;
+  }
+  freeaddrinfo(res);
+  return fd;
+}
+
+static void make_upgrade_request(char *buf, unsigned char *settings, int slen, char *host, int port,
+    char *path) {
   fprintf(stderr, "%*c{ make_upgrade_request\n", 2 * Indent ++, ' ');
 
   char b64[128];
@@ -75,9 +109,9 @@ static void make_upgrade_request(char *buf, unsigned char *settings, int slen) {
   *c = 0;
 
   c = buf;
-  cnt = sprintf(c, "%s %s HTTP/1.1\r\n", "GET", "/svlt29805546");
+  cnt = sprintf(c, "%s %s HTTP/1.1\r\n", "GET", path);
   c += cnt;
-  cnt = sprintf(c, "host: %s\r\n", "slc09wsz.us.oracle.com:7001");
+  cnt = sprintf(c, "host: %s:%d\r\n", host, port);
   c += cnt;
   cnt = sprintf(c, "connection: Upgrade, HTTP2-Settings\r\n");
   c += cnt;
@@ -285,44 +319,55 @@ static int session_send(http2_session_data *psession, int sock) {
 }
 
 
-int main(int argc, char const *argv[])
+int main(int argc, char *argv[])
 {
   fprintf(stderr, "{ main\n"); Indent ++;
 
-  int sock = 0, valread;
-  struct sockaddr_in serv_addr;
-  char *hello = "Hello from client";
-  if ((sock = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
-    printf("\n Socket creation error \n");
+  if (argc < 2) {
+    printf("Usage: %s uri\n", argv[0]);
+    return 1;
+  }
+
+  int rc;
+  struct http_parser_url u;
+  char *uri = argv[1];
+
+  /* Parse the |uri| and stores its components in |u| */
+  rc = http_parser_parse_url(uri, strlen(uri), 0, &u);
+  if (rc != 0) {
+    printf("Could not parse URI %s\n", uri);
     return -1;
   }
 
-  serv_addr.sin_family = AF_INET;
-  serv_addr.sin_port = htons(PORT);
-  
-  // Convert IPv4 and IPv6 addresses from text to binary form
-  if (inet_pton(AF_INET, "10.245.251.228", &serv_addr.sin_addr) <= 0) {
-    printf("\nInvalid address/ Address not supported \n");
+  char *host = strndup(&uri[u.field_data[UF_HOST].off], u.field_data[UF_HOST].len);
+  int port;
+  if (!(u.field_set & (1 << UF_PORT))) {
+    port = 80;  // 443 (secure HTTP)
+  } else {
+    port = u.port;
+  }
+  char *path = strndup(&uri[u.field_data[UF_PATH].off], u.field_data[UF_PATH].len);
+
+  int sock = connect_to(host, port);
+  if (sock < 0) {
+    printf("Could not connect to %s:%d\n", host, port);
     return -1;
   }
 
-  if (connect(sock, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
-    printf("\nConnection Failed \n");
-    return -1;
-  }
-
-  nghttp2_settings_entry iv[1] = {{NGHTTP2_SETTINGS_MAX_CONCURRENT_STREAMS, 100}};
+  nghttp2_settings_entry iv[] = {
+      {NGHTTP2_SETTINGS_MAX_CONCURRENT_STREAMS, 100},
+      {NGHTTP2_SETTINGS_ENABLE_PUSH, 0} };
   unsigned char settings[128];
-  int len = nghttp2_pack_settings_payload(settings, sizeof(settings), iv, 1);
+  int len = nghttp2_pack_settings_payload(settings, sizeof(settings), iv, sizeof(iv) / sizeof(*iv));
   if (len <= 0) {
-    printf("Could not pack SETTINGS: %s", nghttp2_strerror(len));
+    printf("Could not pack SETTINGS: %s\n", nghttp2_strerror(len));
     return -1;
   }
 
   char req[1024];
-  make_upgrade_request(req, settings, len);
+  make_upgrade_request(req, settings, len, host, port, path);
   log_data((unsigned char *)req, strlen(req));
-  int rc = write(sock, req, strlen(req));
+  rc = write(sock, req, strlen(req));
   printf("writen(%d)\n", rc);
 
   char rcvbuf[1024] = {0};
