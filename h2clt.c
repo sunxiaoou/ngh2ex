@@ -286,7 +286,7 @@ static char *strflags(const nghttp2_frame_hd *hd) {
     break;
   case NGHTTP2_SETTINGS:
     if (hd->flags & NGHTTP2_FLAG_ACK) {
-      s = strcat(s, "ACK");
+      return "ACK";
     }
     break;
   case NGHTTP2_PUSH_PROMISE:
@@ -302,7 +302,7 @@ static char *strflags(const nghttp2_frame_hd *hd) {
     break;
   case NGHTTP2_PING:
     if (hd->flags & NGHTTP2_FLAG_ACK) {
-      s = strcat(s, "ACK");
+      return "ACK";
     }
     break;
   }
@@ -443,6 +443,26 @@ static int session_send(http2_session_data *psession, int sock) {
   return 0;
 }
 
+static int session_receive(http2_session_data *psession, int sock) {
+  fprintf(stderr, "%*c{ session_receive\n", 2 * Indent ++, ' ');
+
+  unsigned char rcvbuf[1024];
+
+  int len = read(sock, rcvbuf, sizeof(rcvbuf));
+  if (len > 20 && rcvbuf[16] == 2 && rcvbuf[20] == 1) // workaround for Bug 30267014
+    rcvbuf[20] = 0;
+  log_data(rcvbuf, len);
+  fprintf(stderr, "%*c{ nghttp2_session_mem_recv()\n", 2 * Indent ++, ' ');
+  len = nghttp2_session_mem_recv(psession->session, (uint8_t *)rcvbuf, len);
+  fprintf(stderr, "%*c} nghttp2_session_mem_recv()\n", 2 * -- Indent, ' ');
+  if (len < 0) {
+    printf("Recevied negative error : %s", nghttp2_strerror(len));
+    return -1;
+  }
+
+  fprintf(stderr, "%*c} session_receive\n", 2 * -- Indent, ' ');
+  return 0;
+}
 
 int main(int argc, char *argv[])
 {
@@ -489,7 +509,6 @@ int main(int argc, char *argv[])
     return -1;
   }
 
-
   /* send upgrade request */
   char req[1024];
   make_upgrade_request(req, settings, len, host, port, path);
@@ -510,23 +529,15 @@ int main(int argc, char *argv[])
   session_send(&h2session, sock);
   
   /* receive settings */
-  len = read(sock, rcvbuf, sizeof(rcvbuf));
-  if (rcvbuf[20])     // workaround for Bug 30267014
-    rcvbuf[20] = 0;
-  log_data(rcvbuf, len);
-  fprintf(stderr, "%*c{ nghttp2_session_mem_recv()\n", 2 * Indent ++, ' ');
-  len = nghttp2_session_mem_recv(h2session.session, (uint8_t *)rcvbuf, len);
-  fprintf(stderr, "%*c} nghttp2_session_mem_recv()\n", 2 * -- Indent, ' ');
-  if (len < 0) {
-    printf("Recevied negative error : %s", nghttp2_strerror(len));
-    return -1;
-  }
+  session_receive(&h2session, sock);
 
-  /* send settinig ack */
+  /* send settinigs ack */
   session_send(&h2session, sock);
 
-  int i;
-  for (i = 0; i < 4; i ++) {
+  /* receive settinigs ack */
+  session_receive(&h2session, sock);
+
+  for (int i = 0; i < 3; i ++) {
     rc = read(sock, (unsigned char *)rcvbuf, sizeof(rcvbuf));
     printf("read(%d)\n", rc);
   }
