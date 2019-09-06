@@ -296,7 +296,7 @@ static int initialize_nghttp2_session(http2_session_data *psession, unsigned cha
 }
 
 static int session_send(http2_session_data *psession, int sock) {
-  fprintf(stderr, "%*c} session_send\n", 2 * -- Indent, ' ');
+  fprintf(stderr, "%*c{ session_send\n", 2 * Indent ++, ' ');
 
   const uint8_t *sndbuf;
   int len;
@@ -370,8 +370,8 @@ int main(int argc, char *argv[])
   rc = write(sock, req, strlen(req));
   printf("writen(%d)\n", rc);
 
-  char rcvbuf[1024] = {0};
-  rc = read(sock, (unsigned char *)rcvbuf, sizeof(rcvbuf));
+  unsigned char rcvbuf[1024] = {0};
+  rc = read(sock, rcvbuf, sizeof(rcvbuf));
   printf("read(%d)\n", rc);
 
   http2_session_data h2session;
@@ -381,8 +381,12 @@ int main(int argc, char *argv[])
 
   session_send(&h2session, sock);
   
-  len = read(sock, (unsigned char *)rcvbuf, sizeof(rcvbuf));
-  printf("read(%d)\n", len);
+  len = read(sock, rcvbuf, sizeof(rcvbuf));
+  // printf("read(%d)\n", len);
+  if (rcvbuf[20])     // workaround for Bug 30267014
+    rcvbuf[20] = 0;
+  log_data(rcvbuf, len);
+
   fprintf(stderr, "%*c{ nghttp2_session_mem_recv()\n", 2 * Indent ++, ' ');
   len = nghttp2_session_mem_recv(h2session.session, (uint8_t *)rcvbuf, len);
   fprintf(stderr, "%*c} nghttp2_session_mem_recv()\n", 2 * -- Indent, ' ');
