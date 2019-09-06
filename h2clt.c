@@ -195,6 +195,121 @@ static int on_begin_headers_callback(nghttp2_session *session,
   return 0;
 }
 
+static char *strframetype(uint8_t type) {
+  switch (type) {
+  case NGHTTP2_DATA:
+    return "DATA";
+  case NGHTTP2_HEADERS:
+    return "HEADERS";
+  case NGHTTP2_PRIORITY:
+    return "PRIORITY";
+  case NGHTTP2_RST_STREAM:
+    return "RST_STREAM";
+  case NGHTTP2_SETTINGS:
+    return "SETTINGS";
+  case NGHTTP2_PUSH_PROMISE:
+    return "PUSH_PROMISE";
+  case NGHTTP2_PING:
+    return "PING";
+  case NGHTTP2_GOAWAY:
+    return "GOAWAY";
+  case NGHTTP2_WINDOW_UPDATE:
+    return "WINDOW_UPDATE";
+  case NGHTTP2_ALTSVC:
+    return "ALTSVC";
+  case NGHTTP2_ORIGIN:
+    return "ORIGIN";
+  default:
+    return "UNKNOWN";
+  }
+}
+
+static char *strsettingsid(int id) {
+  switch (id) {
+  case NGHTTP2_SETTINGS_HEADER_TABLE_SIZE:
+    return "SETTINGS_HEADER_TABLE_SIZE";
+  case NGHTTP2_SETTINGS_ENABLE_PUSH:
+    return "SETTINGS_ENABLE_PUSH";
+  case NGHTTP2_SETTINGS_MAX_CONCURRENT_STREAMS:
+    return "SETTINGS_MAX_CONCURRENT_STREAMS";
+  case NGHTTP2_SETTINGS_INITIAL_WINDOW_SIZE:
+    return "SETTINGS_INITIAL_WINDOW_SIZE";
+  case NGHTTP2_SETTINGS_MAX_FRAME_SIZE:
+    return "SETTINGS_MAX_FRAME_SIZE";
+  case NGHTTP2_SETTINGS_MAX_HEADER_LIST_SIZE:
+    return "SETTINGS_MAX_HEADER_LIST_SIZE";
+  case NGHTTP2_SETTINGS_ENABLE_CONNECT_PROTOCOL:
+    return "SETTINGS_ENABLE_CONNECT_PROTOCOL";
+  default:
+    return "UNKNOWN";
+  }
+}
+
+static char *strflags(const nghttp2_frame_hd *hd) {
+  char *s = "";
+  switch (hd->type) {
+  case NGHTTP2_DATA:
+    if (hd->flags & NGHTTP2_FLAG_END_STREAM) {
+      s = "END_STREAM";
+    }
+    if (hd->flags & NGHTTP2_FLAG_PADDED) {
+      if (! *s) {
+        s = strcat(s, " | ");
+      }
+      s = strcat(s, "PADDED");
+    }
+    break;
+  case NGHTTP2_HEADERS:
+    if (hd->flags & NGHTTP2_FLAG_END_STREAM) {
+      s = "END_STREAM";
+    }
+    if (hd->flags & NGHTTP2_FLAG_END_HEADERS) {
+      if (! *s) {
+        s = strcat(s, " | ");;
+      }
+      s = strcat(s, "END_HEADERS");
+    }
+    if (hd->flags & NGHTTP2_FLAG_PADDED) {
+      if (! *s) {
+        s = strcat(s, " | ");;
+      }
+      s = strcat(s, "PADDED");
+    }
+    if (hd->flags & NGHTTP2_FLAG_PRIORITY) {
+      if (! *s) {
+        s = strcat(s, " | ");;
+      }
+      s = strcat(s, "PRIORITY");
+    }
+    break;
+  case NGHTTP2_PRIORITY:
+    break;
+  case NGHTTP2_SETTINGS:
+    if (hd->flags & NGHTTP2_FLAG_ACK) {
+      s = strcat(s, "ACK");
+    }
+    break;
+  case NGHTTP2_PUSH_PROMISE:
+    if (hd->flags & NGHTTP2_FLAG_END_HEADERS) {
+      s = strcat(s, "END_HEADERS");
+    }
+    if (hd->flags & NGHTTP2_FLAG_PADDED) {
+      if (! *s) {
+        s = strcat(s, " | ");;
+      }
+      s = strcat(s, "PADDED");
+    }
+    break;
+  case NGHTTP2_PING:
+    if (hd->flags & NGHTTP2_FLAG_ACK) {
+      s = strcat(s, "ACK");
+    }
+    break;
+  }
+
+  return s;
+}
+
 /* nghttp2_on_frame_recv_callback: Called when nghttp2 library
    received a complete frame from the remote peer. */
 static int on_frame_recv_callback(nghttp2_session *session, const nghttp2_frame *frame, void *user_data) {
@@ -204,10 +319,20 @@ static int on_frame_recv_callback(nghttp2_session *session, const nghttp2_frame 
   http2_session_data *session_data = (http2_session_data *)user_data;
   (void)session;
 
+  fprintf(stderr, "%s frame <length=%zu, flags=%s, stream_id=%d>\n",
+      strframetype(frame->hd.type), frame->hd.length, strflags(&frame->hd), frame->hd.stream_id);
+
   switch (frame->hd.type) {
   case NGHTTP2_HEADERS:
     if (frame->headers.cat == NGHTTP2_HCAT_RESPONSE && session_data->stream_id == frame->hd.stream_id) {
       fprintf(stderr, "All headers received\n");
+    }
+    break;
+  case NGHTTP2_SETTINGS:
+    fprintf(stderr, "(niv=%u)\n", (int)frame->settings.niv);
+    for (int i = 0; i < frame->settings.niv; ++ i) {
+      fprintf(stderr, "[%s(0x%02x):%u]\n", strsettingsid(frame->settings.iv[i].settings_id),
+          frame->settings.iv[i].settings_id, frame->settings.iv[i].value);
     }
     break;
   }
@@ -364,29 +489,31 @@ int main(int argc, char *argv[])
     return -1;
   }
 
+
+  /* send upgrade request */
   char req[1024];
   make_upgrade_request(req, settings, len, host, port, path);
   log_data((unsigned char *)req, strlen(req));
   rc = write(sock, req, strlen(req));
   printf("writen(%d)\n", rc);
 
+  /* receive 101 switching protocols */
   unsigned char rcvbuf[1024] = {0};
   rc = read(sock, rcvbuf, sizeof(rcvbuf));
   printf("read(%d)\n", rc);
 
+  /* send magic with settings */
   http2_session_data h2session;
   h2session.sock = sock;
   h2session.stream_id = 1;
   initialize_nghttp2_session(&h2session, settings, len);
-
   session_send(&h2session, sock);
   
+  /* receive settings */
   len = read(sock, rcvbuf, sizeof(rcvbuf));
-  // printf("read(%d)\n", len);
   if (rcvbuf[20])     // workaround for Bug 30267014
     rcvbuf[20] = 0;
   log_data(rcvbuf, len);
-
   fprintf(stderr, "%*c{ nghttp2_session_mem_recv()\n", 2 * Indent ++, ' ');
   len = nghttp2_session_mem_recv(h2session.session, (uint8_t *)rcvbuf, len);
   fprintf(stderr, "%*c} nghttp2_session_mem_recv()\n", 2 * -- Indent, ' ');
@@ -395,14 +522,7 @@ int main(int argc, char *argv[])
     return -1;
   }
 
-  /*
-  static unsigned char buf3[] = {
-    0x00, 0x00, 0x00, 0x04, 0x01, 0x00, 0x00, 0x00, 0x00
-  };
-  rc = write(sock, buf3, sizeof(buf3));
-  printf("writen(%d)\n", rc);
-  */
-
+  /* send settinig ack */
   session_send(&h2session, sock);
 
   int i;
