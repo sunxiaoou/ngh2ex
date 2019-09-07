@@ -245,41 +245,48 @@ static char *strsettingsid(int id) {
   }
 }
 
+#define APPEND(S, S2) { \
+  strcpy(S, S2); S += strlen(S2); \
+}
+
 static char *strflags(const nghttp2_frame_hd *hd) {
-  char *s = "";
+  char str[100];
+  memset(str, 0, sizeof(str));
+  char *s = str;
+
   switch (hd->type) {
   case NGHTTP2_DATA:
     if (hd->flags & NGHTTP2_FLAG_END_STREAM) {
-      s = "END_STREAM";
+      APPEND(s, "END_STREAM")
     }
     if (hd->flags & NGHTTP2_FLAG_PADDED) {
       if (! *s) {
-        s = strcat(s, " | ");
+        APPEND(s, " | ")
       }
-      s = strcat(s, "PADDED");
+      APPEND(s, "PADDED")
     }
     break;
   case NGHTTP2_HEADERS:
     if (hd->flags & NGHTTP2_FLAG_END_STREAM) {
-      s = "END_STREAM";
+      APPEND(s, "END_STREAM")
     }
     if (hd->flags & NGHTTP2_FLAG_END_HEADERS) {
-      if (! *s) {
-        s = strcat(s, " | ");;
+      if (s != str) {
+        APPEND(s, " | ")
       }
-      s = strcat(s, "END_HEADERS");
+      APPEND(s, "END_HEADERS")
     }
     if (hd->flags & NGHTTP2_FLAG_PADDED) {
-      if (! *s) {
-        s = strcat(s, " | ");;
+      if (s != str) {
+        APPEND(s, " | ")
       }
-      s = strcat(s, "PADDED");
+      APPEND(s, "PADDED")
     }
     if (hd->flags & NGHTTP2_FLAG_PRIORITY) {
-      if (! *s) {
-        s = strcat(s, " | ");;
+      if (s != str) {
+        APPEND(s, " | ")
       }
-      s = strcat(s, "PRIORITY");
+      APPEND(s, "PRIORITY")
     }
     break;
   case NGHTTP2_PRIORITY:
@@ -291,13 +298,13 @@ static char *strflags(const nghttp2_frame_hd *hd) {
     break;
   case NGHTTP2_PUSH_PROMISE:
     if (hd->flags & NGHTTP2_FLAG_END_HEADERS) {
-      s = strcat(s, "END_HEADERS");
+      APPEND(s, "END_HEADERS")
     }
     if (hd->flags & NGHTTP2_FLAG_PADDED) {
       if (! *s) {
-        s = strcat(s, " | ");;
+        APPEND(s, " | ")
       }
-      s = strcat(s, "PADDED");
+      APPEND(s, "PADDED")
     }
     break;
   case NGHTTP2_PING:
@@ -307,7 +314,7 @@ static char *strflags(const nghttp2_frame_hd *hd) {
     break;
   }
 
-  return s;
+  return s = str;
 }
 
 /* nghttp2_on_frame_recv_callback: Called when nghttp2 library
@@ -537,10 +544,14 @@ int main(int argc, char *argv[])
   /* receive settinigs ack */
   session_receive(&h2session, sock);
 
+  /* receive headers response */
+  session_receive(&h2session, sock);
+  /*
   for (int i = 0; i < 3; i ++) {
     rc = read(sock, (unsigned char *)rcvbuf, sizeof(rcvbuf));
     printf("read(%d)\n", rc);
   }
+  */
 
   -- Indent; fprintf(stderr, "} main\n");
   return 0;
