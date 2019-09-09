@@ -446,6 +446,12 @@ static int session_send(http2_session_data *psession, int sock) {
     printf("writen(%d)\n", len);
   }
 
+  if (nghttp2_session_want_read(psession->session) == 0 &&
+      nghttp2_session_want_write(psession->session) == 0) {
+    fprintf(stderr, "%*c} session_send\n", 2 * -- Indent, ' ');
+    return -1;
+  }
+
   fprintf(stderr, "%*c} session_send\n", 2 * -- Indent, ' ');
   return 0;
 }
@@ -528,30 +534,26 @@ int main(int argc, char *argv[])
   rc = read(sock, rcvbuf, sizeof(rcvbuf));
   printf("read(%d)\n", rc);
 
-  /* send magic with settings */
   http2_session_data h2session;
   h2session.sock = sock;
   h2session.stream_id = 1;
+
+  /* send magic with settings */
   initialize_nghttp2_session(&h2session, settings, len);
   session_send(&h2session, sock);
   
-  /* receive settings */
-  session_receive(&h2session, sock);
-
-  /* send settinigs ack */
-  session_send(&h2session, sock);
-
-  /* receive settinigs ack */
-  session_receive(&h2session, sock);
-
-  /* receive headers response */
-  session_receive(&h2session, sock);
-  /*
-  for (int i = 0; i < 3; i ++) {
-    rc = read(sock, (unsigned char *)rcvbuf, sizeof(rcvbuf));
-    printf("read(%d)\n", rc);
+  int maxfd = sock + 1;
+  fd_set rset;
+  FD_ZERO(&rset);
+  while (1) {
+    FD_SET(sock, &rset);
+     select(maxfd, &rset, NULL, NULL, NULL);
+     if (FD_ISSET(sock, &rset)) {
+        session_receive(&h2session, sock);
+        if (session_send(&h2session, sock) < 0)
+          break;
+     }
   }
-  */
 
   -- Indent; fprintf(stderr, "} main\n");
   return 0;
