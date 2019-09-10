@@ -1,4 +1,4 @@
-// A sample of a nghttp2 client with security
+// A sample of a nghttp2 client without security
 #include <errno.h>
 #include <netdb.h>
 #include <stdio.h>
@@ -454,12 +454,12 @@ static int session_send(http2_session_data *psession, int sock) {
     if (len == 0)
       break;
     if (len < 0) {
-      printf("nghttp2_session_mem_send returns error(%s)", nghttp2_strerror(len));
+      fprintf(stderr, "nghttp2_session_mem_send returns error(%s)", nghttp2_strerror(len));
       return -1;
     }
     log_data((unsigned char *)sndbuf, len);
     len = write(sock, sndbuf, len);
-    printf("writen(%d)\n", len);
+    fprintf(stderr, "writen(%d)\n", len);
   }
 
   if (nghttp2_session_want_read(psession->session) == 0 &&
@@ -485,7 +485,7 @@ static int session_receive(http2_session_data *psession, int sock) {
   len = nghttp2_session_mem_recv(psession->session, (uint8_t *)rcvbuf, len);
   fprintf(stderr, "%*c} nghttp2_session_mem_recv()\n", 2 * -- Indent, ' ');
   if (len < 0) {
-    printf("Recevied negative error : %s", nghttp2_strerror(len));
+    fprintf(stderr, "Recevied negative error : %s", nghttp2_strerror(len));
     return -1;
   }
 
@@ -498,7 +498,7 @@ int main(int argc, char *argv[])
   fprintf(stderr, "{ main\n"); Indent ++;
 
   if (argc < 2) {
-    printf("Usage: %s uri\n", argv[0]);
+    fprintf(stderr, "Usage: %s uri\n", argv[0]);
     return 1;
   }
 
@@ -509,7 +509,7 @@ int main(int argc, char *argv[])
   /* Parse the |uri| and stores its components in |u| */
   rc = http_parser_parse_url(uri, strlen(uri), 0, &u);
   if (rc != 0) {
-    printf("Could not parse URI %s\n", uri);
+    fprintf(stderr, "Could not parse URI %s\n", uri);
     return -1;
   }
 
@@ -524,17 +524,18 @@ int main(int argc, char *argv[])
 
   int sock = connect_to(host, port);
   if (sock < 0) {
-    printf("Could not connect to %s:%d\n", host, port);
+    fprintf(stderr, "Could not connect to %s:%d\n", host, port);
     return -1;
   }
 
   nghttp2_settings_entry iv[] = {
-      {NGHTTP2_SETTINGS_MAX_CONCURRENT_STREAMS, 100},
-      {NGHTTP2_SETTINGS_ENABLE_PUSH, 0} };
+    {NGHTTP2_SETTINGS_MAX_CONCURRENT_STREAMS, 100},
+    {NGHTTP2_SETTINGS_ENABLE_PUSH, 0}
+  };
   unsigned char settings[128];
   int len = nghttp2_pack_settings_payload(settings, sizeof(settings), iv, sizeof(iv) / sizeof(*iv));
   if (len <= 0) {
-    printf("Could not pack SETTINGS: %s\n", nghttp2_strerror(len));
+    fprintf(stderr, "Could not pack SETTINGS: %s\n", nghttp2_strerror(len));
     return -1;
   }
 
@@ -543,12 +544,12 @@ int main(int argc, char *argv[])
   make_upgrade_request(req, settings, len, host, port, path);
   log_data((unsigned char *)req, strlen(req));
   rc = write(sock, req, strlen(req));
-  printf("writen(%d)\n", rc);
+  fprintf(stderr, "writen(%d)\n", rc);
 
   /* receive 101 switching protocols */
-  /* unsigned */ char rcvbuf[1024] = {0};
+  char rcvbuf[1024] = {0};
   rc = read(sock, rcvbuf, sizeof(rcvbuf));
-  printf("read(%d)\n", rc);
+  fprintf(stderr, "read(%d)\n", rc);
 
   http_parser_settings parser_settings = {
     NULL,              // http_cb      on_message_begin;
@@ -568,12 +569,12 @@ int main(int argc, char *argv[])
   rc = http_parser_execute(&parser, &parser_settings, rcvbuf, rc);
   int htperr = parser.http_errno;
   if (htperr != HPE_OK) {
-    printf("Failed to parse HTTP Upgrade response header %s\n:", http_errno_name(htperr));
+    fprintf(stderr, "Failed to parse HTTP Upgrade response header %s\n:", http_errno_name(htperr));
     return -1;
   }
 
   if (h2session.upgrade_response_status != 101) {
-    printf("HTTP Upgrade failed");
+    fprintf(stderr, "HTTP Upgrade failed");
     return -1;
   }
 
