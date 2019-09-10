@@ -1,4 +1,4 @@
-// Client side C/C++ program to demonstrate Socket programming
+// A sample of a nghttp2 client with security
 #include <errno.h>
 #include <netdb.h>
 #include <stdio.h>
@@ -13,6 +13,7 @@
 int Indent = 0;
 
 typedef struct {
+  unsigned int upgrade_response_status;
   int sock;
   int stream_id;
   nghttp2_session *session;
@@ -20,9 +21,9 @@ typedef struct {
 
 static void log_data(unsigned char *data, int len)
 {
-	unsigned char c;
-	char tmbuf[40];
-	int i, j, maxlen;
+  unsigned char c;
+  char tmbuf[40];
+  int i, j, maxlen;
 
   fprintf(stderr, "len(%d)\n", len);
   for(i = 0; i < len;){
@@ -60,6 +61,8 @@ static void log_data(unsigned char *data, int len)
 }
 
 static int connect_to(const char *host, uint16_t port) {
+  fprintf(stderr, "%*c{ connect_to\n", 2 * Indent ++, ' ');
+
   struct addrinfo hints;
   int fd = -1;
   int rv;
@@ -72,8 +75,9 @@ static int connect_to(const char *host, uint16_t port) {
   hints.ai_socktype = SOCK_STREAM;
   rv = getaddrinfo(host, service, &hints, &res);
   if (rv != 0) {
-	  fprintf(stderr, "FATAL: getaddrinfo: %s\n", gai_strerror(rv));
-	  return -1;
+    fprintf(stderr, "FATAL: getaddrinfo: %s\n", gai_strerror(rv));
+    fprintf(stderr, "%*c} connect_to\n", 2 * -- Indent, ' ');
+    return -1;
   }
   for (rp = res; rp; rp = rp->ai_next) {
     fd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
@@ -89,6 +93,8 @@ static int connect_to(const char *host, uint16_t port) {
     fd = -1;
   }
   freeaddrinfo(res);
+
+  fprintf(stderr, "%*c} connect_to2\n", 2 * -- Indent, ' ');
   return fd;
 }
 
@@ -128,6 +134,16 @@ static void make_upgrade_request(char *buf, unsigned char *settings, int slen, c
   fprintf(stderr, "%*c} make_upgrade_request\n", 2 * -- Indent, ' ');
 }
 
+static int parser_completecb(http_parser *parser) {
+  fprintf(stderr, "%*c{ parser_completecb\n", 2 * Indent ++, ' ');
+
+  http2_session_data *session_data = (http2_session_data *)parser->data;
+  session_data->upgrade_response_status = parser->status_code;
+
+  fprintf(stderr, "%*c} parser_completecb\n", 2 * -- Indent, ' ');
+  return 0;
+}
+
 static ssize_t send_callback(nghttp2_session *session, const uint8_t *data, size_t length, int flags, void *user_data) {
   fprintf(stderr, "%*c{ send_callback\n", 2 * Indent ++, ' ');
 
@@ -155,7 +171,7 @@ static int on_header_callback(nghttp2_session *session,
                               size_t namelen, const uint8_t *value,
                               size_t valuelen, uint8_t flags, void *user_data) {
   fprintf(stderr, "%*c{ on_header_callback\n", 2 * Indent ++, ' ');
-  
+
   http2_session_data *session_data = (http2_session_data *)user_data;
   (void)session;
   (void)flags;
@@ -179,7 +195,7 @@ static int on_begin_headers_callback(nghttp2_session *session,
                                      const nghttp2_frame *frame,
                                      void *user_data) {
   fprintf(stderr, "%*c{ on_begin_headers_callback\n", 2 * Indent ++, ' ');
-  
+
   http2_session_data *session_data = (http2_session_data *)user_data;
   (void)session;
 
@@ -320,7 +336,7 @@ static char *strflags(const nghttp2_frame_hd *hd) {
 /* nghttp2_on_frame_recv_callback: Called when nghttp2 library
    received a complete frame from the remote peer. */
 static int on_frame_recv_callback(nghttp2_session *session, const nghttp2_frame *frame, void *user_data) {
-  
+
   fprintf(stderr, "%*c{ on_frame_recv_callback\n", 2 * Indent ++, ' ');
 
   http2_session_data *session_data = (http2_session_data *)user_data;
@@ -357,7 +373,7 @@ static int on_data_chunk_recv_callback(nghttp2_session *session, uint8_t flags,
                                        int32_t stream_id, const uint8_t *data,
                                        size_t len, void *user_data) {
   fprintf(stderr, "%*c{ on_data_chunk_callback\n", 2 * Indent ++, ' ');
-  
+
   http2_session_data *session_data = (http2_session_data *)user_data;
   (void)session;
   (void)flags;
@@ -377,13 +393,13 @@ static int on_data_chunk_recv_callback(nghttp2_session *session, uint8_t flags,
 static int on_stream_close_callback(nghttp2_session *session, int32_t stream_id,
                                     uint32_t error_code, void *user_data) {
   fprintf(stderr, "%*c{ on_stream_close_callback\n", 2 * Indent ++, ' ');
-  
+
   http2_session_data *session_data = (http2_session_data *)user_data;
   int rv;
 
   if (session_data->stream_id == stream_id) {
     fprintf(stderr, "Stream %d closed with error_code=%u\n", stream_id, error_code);
-    fprintf(stderr, "%*c nghttp2_session_terminate_session\n", 2 * Indent, ' ');        
+    fprintf(stderr, "%*c nghttp2_session_terminate_session\n", 2 * Indent, ' ');
     rv = nghttp2_session_terminate_session(session, NGHTTP2_NO_ERROR);
     if (rv != 0) {
       fprintf(stderr, "%*c} on_stream_close_callback\n", 2 * -- Indent, ' ');
@@ -530,18 +546,44 @@ int main(int argc, char *argv[])
   printf("writen(%d)\n", rc);
 
   /* receive 101 switching protocols */
-  unsigned char rcvbuf[1024] = {0};
+  /* unsigned */ char rcvbuf[1024] = {0};
   rc = read(sock, rcvbuf, sizeof(rcvbuf));
   printf("read(%d)\n", rc);
 
+  http_parser_settings parser_settings = {
+    NULL,              // http_cb      on_message_begin;
+    NULL,              // http_data_cb on_url;
+    NULL,              // http_data_cb on_status;
+    NULL,              // http_data_cb on_header_field;
+    NULL,              // http_data_cb on_header_value;
+    NULL,              // http_cb      on_headers_complete;
+    NULL,              // http_data_cb on_body;
+    parser_completecb  // http_cb      on_message_complete;
+  };
+  http_parser parser;
+  http_parser_init(&parser, HTTP_RESPONSE);
   http2_session_data h2session;
+  parser.data = &h2session;
+
+  rc = http_parser_execute(&parser, &parser_settings, rcvbuf, rc);
+  int htperr = parser.http_errno;
+  if (htperr != HPE_OK) {
+    printf("Failed to parse HTTP Upgrade response header %s\n:", http_errno_name(htperr));
+    return -1;
+  }
+
+  if (h2session.upgrade_response_status != 101) {
+    printf("HTTP Upgrade failed");
+    return -1;
+  }
+
   h2session.sock = sock;
   h2session.stream_id = 1;
 
   /* send magic with settings */
   initialize_nghttp2_session(&h2session, settings, len);
   session_send(&h2session, sock);
-  
+
   int maxfd = sock + 1;
   fd_set rset;
   FD_ZERO(&rset);
