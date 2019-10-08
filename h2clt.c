@@ -9,8 +9,8 @@
 
 #include "http-parser/http_parser.h"
 #include "b64/cencode.h"
+#include "log/log.h"
 
-int Indent = 0;
 
 typedef struct {
   unsigned int upgrade_response_status;
@@ -19,49 +19,9 @@ typedef struct {
   nghttp2_session *session;
 } http2_session_data;
 
-static void log_data(unsigned char *data, int len)
-{
-  unsigned char c;
-  char tmbuf[40];
-  int i, j, maxlen;
-
-  fprintf(stderr, "len(%d)\n", len);
-  for(i = 0; i < len;){
-    fprintf(stderr, "%03x | ", i / 16);
-    maxlen = (len - i > 16) ? 16 : len - i;
-    for(j = 0; j < maxlen; j ++){
-      if(j && j % 4 == 0)
-        fprintf(stderr, " ");
-      fprintf(stderr, "%02X", *((unsigned char *)data + i + j));
-    }
-
-    for(; j < 16; j ++){
-      if(j && j % 4 == 0)
-        fprintf(stderr, " ");
-      fprintf(stderr, "  ");
-    }
-
-    fprintf(stderr, " | ");
-    for(j = 0; j < maxlen; j ++) {
-      c = *((unsigned char *)data + i + j);
-      if(c >= ' ' && c < 127 )
-        fprintf(stderr, "%c", c);
-      else
-        fprintf(stderr, ".");
-    }
-    for(; j < 16; j ++)
-      fprintf(stderr, " ");
-
-    i += maxlen;
-    if(i < len)
-      fprintf(stderr, "\n");
-  }
-
-  fprintf(stderr, "\n");
-}
 
 static int connect_to(const char *host, uint16_t port) {
-  fprintf(stderr, "%*c{ connect_to\n", 2 * Indent ++, ' ');
+  PRINT(log_in, "connect_to")
 
   struct addrinfo hints;
   int fd = -1;
@@ -76,7 +36,7 @@ static int connect_to(const char *host, uint16_t port) {
   rv = getaddrinfo(host, service, &hints, &res);
   if (rv != 0) {
     fprintf(stderr, "FATAL: getaddrinfo: %s\n", gai_strerror(rv));
-    fprintf(stderr, "%*c} connect_to\n", 2 * -- Indent, ' ');
+    PRINT(log_out, "connect_to")
     return -1;
   }
   for (rp = res; rp; rp = rp->ai_next) {
@@ -94,13 +54,13 @@ static int connect_to(const char *host, uint16_t port) {
   }
   freeaddrinfo(res);
 
-  fprintf(stderr, "%*c} connect_to2\n", 2 * -- Indent, ' ');
+  PRINT(log_out, "connect_to2")
   return fd;
 }
 
 static void make_upgrade_request(char *buf, unsigned char *settings, int slen, char *host, int port,
     char *path) {
-  fprintf(stderr, "%*c{ make_upgrade_request\n", 2 * Indent ++, ' ');
+  PRINT(log_in, "make_upgrade_request")
 
   char b64[128];
   char *c = b64;
@@ -131,30 +91,30 @@ static void make_upgrade_request(char *buf, unsigned char *settings, int slen, c
   c += cnt;
   *c = 0;
 
-  fprintf(stderr, "%*c} make_upgrade_request\n", 2 * -- Indent, ' ');
+  PRINT(log_out, "make_upgrade_request")
 }
 
 static int parser_completecb(http_parser *parser) {
-  fprintf(stderr, "%*c{ parser_completecb\n", 2 * Indent ++, ' ');
+  PRINT(log_in, "parser_completecb")
 
   http2_session_data *session_data = (http2_session_data *)parser->data;
   session_data->upgrade_response_status = parser->status_code;
 
-  fprintf(stderr, "%*c} parser_completecb\n", 2 * -- Indent, ' ');
+  PRINT(log_out, "parser_completecb")
   return 0;
 }
 
 static ssize_t send_callback(nghttp2_session *session, const uint8_t *data, size_t length, int flags, void *user_data) {
-  fprintf(stderr, "%*c{ send_callback\n", 2 * Indent ++, ' ');
+  PRINT(log_in, "send_callback")
 
   http2_session_data *session_data = (http2_session_data *)user_data;
   (void)session;
   (void)flags;
 
-  log_data((unsigned char *)data, length);
+  HEXDUMP(data, length);
   // bufferevent_write(bev, data, length);
 
-  fprintf(stderr, "%*c} send_callback\n", 2 * -- Indent, ' ');
+  PRINT(log_out, "send_callback")
   return (ssize_t)length;
 }
 
@@ -170,7 +130,7 @@ static int on_header_callback(nghttp2_session *session,
                               const nghttp2_frame *frame, const uint8_t *name,
                               size_t namelen, const uint8_t *value,
                               size_t valuelen, uint8_t flags, void *user_data) {
-  fprintf(stderr, "%*c{ on_header_callback\n", 2 * Indent ++, ' ');
+  PRINT(log_in, "on_header_callback")
 
   http2_session_data *session_data = (http2_session_data *)user_data;
   (void)session;
@@ -185,7 +145,7 @@ static int on_header_callback(nghttp2_session *session,
     }
   }
 
-  fprintf(stderr, "%*c} on_header_callback\n", 2 * -- Indent, ' ');
+  PRINT(log_out, "on_header_callback")
   return 0;
 }
 
@@ -194,7 +154,7 @@ static int on_header_callback(nghttp2_session *session,
 static int on_begin_headers_callback(nghttp2_session *session,
                                      const nghttp2_frame *frame,
                                      void *user_data) {
-  fprintf(stderr, "%*c{ on_begin_headers_callback\n", 2 * Indent ++, ' ');
+  PRINT(log_in, "on_begin_headers_callback")
 
   http2_session_data *session_data = (http2_session_data *)user_data;
   (void)session;
@@ -207,7 +167,7 @@ static int on_begin_headers_callback(nghttp2_session *session,
     break;
   }
 
-  fprintf(stderr, "%*c} on_begin_headers_callback\n", 2 * -- Indent, ' ');
+  PRINT(log_out, "on_begin_headers_callback")
   return 0;
 }
 
@@ -337,7 +297,7 @@ static char *strflags(const nghttp2_frame_hd *hd) {
    received a complete frame from the remote peer. */
 static int on_frame_recv_callback(nghttp2_session *session, const nghttp2_frame *frame, void *user_data) {
 
-  fprintf(stderr, "%*c{ on_frame_recv_callback\n", 2 * Indent ++, ' ');
+  PRINT(log_in, "on_frame_recv_callback")
 
   http2_session_data *session_data = (http2_session_data *)user_data;
   (void)session;
@@ -360,7 +320,7 @@ static int on_frame_recv_callback(nghttp2_session *session, const nghttp2_frame 
     break;
   }
 
-  fprintf(stderr, "%*c} on_frame_recv_callback\n", 2 * -- Indent, ' ');
+  PRINT(log_out, "on_frame_recv_callback")
   return 0;
 }
 
@@ -372,17 +332,17 @@ static int on_frame_recv_callback(nghttp2_session *session, const nghttp2_frame 
 static int on_data_chunk_recv_callback(nghttp2_session *session, uint8_t flags,
                                        int32_t stream_id, const uint8_t *data,
                                        size_t len, void *user_data) {
-  fprintf(stderr, "%*c{ on_data_chunk_callback\n", 2 * Indent ++, ' ');
+  PRINT(log_in, "on_data_chunk_callback")
 
   http2_session_data *session_data = (http2_session_data *)user_data;
   (void)session;
   (void)flags;
 
   if (session_data->stream_id == stream_id) {
-    log_data((unsigned char *)data, len);
+    HEXDUMP(data, len);
   }
 
-  fprintf(stderr, "%*c} on_data_chunk_callback\n", 2 * -- Indent, ' ');
+  PRINT(log_out, "on_data_chunk_callback")
   return 0;
 }
 
@@ -392,27 +352,27 @@ static int on_data_chunk_recv_callback(nghttp2_session *session, uint8_t flags,
    session */
 static int on_stream_close_callback(nghttp2_session *session, int32_t stream_id,
                                     uint32_t error_code, void *user_data) {
-  fprintf(stderr, "%*c{ on_stream_close_callback\n", 2 * Indent ++, ' ');
+  PRINT(log_in, "on_stream_close_callback")
 
   http2_session_data *session_data = (http2_session_data *)user_data;
   int rv;
 
   if (session_data->stream_id == stream_id) {
     fprintf(stderr, "Stream %d closed with error_code=%u\n", stream_id, error_code);
-    fprintf(stderr, "%*c nghttp2_session_terminate_session\n", 2 * Indent, ' ');
+    PRINT(log_still, "nghttp2_session_terminate_session")
     rv = nghttp2_session_terminate_session(session, NGHTTP2_NO_ERROR);
     if (rv != 0) {
-      fprintf(stderr, "%*c} on_stream_close_callback\n", 2 * -- Indent, ' ');
+      PRINT(log_out, "on_stream_close_callback")
       return NGHTTP2_ERR_CALLBACK_FAILURE;
     }
   }
 
-  fprintf(stderr, "%*c} on_stream_close_callback2\n", 2 * -- Indent, ' ');
+  PRINT(log_out, "on_stream_close_callback2")
   return 0;
 }
 
 static int initialize_nghttp2_session(http2_session_data *psession, unsigned char *settings, int slen) {
-  fprintf(stderr, "%*c{ initialize_nghttp2_session\n", 2 * Indent ++, ' ');
+  PRINT(log_in, "initialize_nghttp2_session")
 
   nghttp2_session_callbacks *callbacks;
 
@@ -424,27 +384,27 @@ static int initialize_nghttp2_session(http2_session_data *psession, unsigned cha
   nghttp2_session_callbacks_set_on_header_callback(callbacks, on_header_callback);
   nghttp2_session_callbacks_set_on_begin_headers_callback(callbacks, on_begin_headers_callback);
 
-  fprintf(stderr, "%*c nghttp2_session_client_new\n", 2 * Indent, ' ');
+  PRINT(log_still, "nghttp2_session_client_new")
   int rc = nghttp2_session_client_new(&psession->session, callbacks, psession);
   if (rc != 0) {
-    fprintf(stderr, "%*c} initialize_nghttp2_session\n", 2 * -- Indent, ' ');
+    PRINT(log_out, "initialize_nghttp2_session")
     return -1;
   }
   nghttp2_session_callbacks_del(callbacks);
 
-  fprintf(stderr, "%*c nghttp2_session_upgrade2\n", 2 * Indent, ' ');
+  PRINT(log_still, "nghttp2_session_upgrade2")
   rc = nghttp2_session_upgrade2(psession->session, settings, slen, 0, NULL);
   if (rc != 0) {
-    fprintf(stderr, "%*c} initialize_nghttp2_session2\n", 2 * -- Indent, ' ');
+    PRINT(log_out, "initialize_nghttp2_session2")
     return -1;
   }
 
-  fprintf(stderr, "%*c} initialize_nghttp2_session3\n", 2 * -- Indent, ' ');
+  PRINT(log_out, "initialize_nghttp2_session3")
   return 0;
 }
 
 static int session_send(http2_session_data *psession, int sock) {
-  fprintf(stderr, "%*c{ session_send\n", 2 * Indent ++, ' ');
+  PRINT(log_in, "session_send")
 
   const uint8_t *sndbuf;
   int len;
@@ -457,45 +417,45 @@ static int session_send(http2_session_data *psession, int sock) {
       fprintf(stderr, "nghttp2_session_mem_send returns error(%s)", nghttp2_strerror(len));
       return -1;
     }
-    log_data((unsigned char *)sndbuf, len);
+    HEXDUMP(sndbuf, len);
     len = write(sock, sndbuf, len);
-    fprintf(stderr, "writen(%d)\n", len);
+    fprintf(stderr, "written(%d)\n", len);
   }
 
   if (nghttp2_session_want_read(psession->session) == 0 &&
       nghttp2_session_want_write(psession->session) == 0) {
-    fprintf(stderr, "%*c} session_send\n", 2 * -- Indent, ' ');
+    PRINT(log_out, "session_send")
     return -1;
   }
 
-  fprintf(stderr, "%*c} session_send\n", 2 * -- Indent, ' ');
+  PRINT(log_out, "session_send2")
   return 0;
 }
 
 static int session_receive(http2_session_data *psession, int sock) {
-  fprintf(stderr, "%*c{ session_receive\n", 2 * Indent ++, ' ');
+  PRINT(log_in, "session_receive")
 
   unsigned char rcvbuf[1024];
 
   int len = read(sock, rcvbuf, sizeof(rcvbuf));
   if (len > 20 && rcvbuf[16] == 2 && rcvbuf[20] == 1) // workaround for Bug 30267014
     rcvbuf[20] = 0;
-  log_data(rcvbuf, len);
-  fprintf(stderr, "%*c{ nghttp2_session_mem_recv()\n", 2 * Indent ++, ' ');
+  HEXDUMP(rcvbuf, len);
+  PRINT(log_in, "nghttp2_session_mem_recv")
   len = nghttp2_session_mem_recv(psession->session, (uint8_t *)rcvbuf, len);
-  fprintf(stderr, "%*c} nghttp2_session_mem_recv()\n", 2 * -- Indent, ' ');
+  PRINT(log_out, "nghttp2_session_mem_recv")
   if (len < 0) {
     fprintf(stderr, "Recevied negative error : %s", nghttp2_strerror(len));
     return -1;
   }
 
-  fprintf(stderr, "%*c} session_receive\n", 2 * -- Indent, ' ');
+  PRINT(log_out, "session_receive")
   return 0;
 }
 
 int main(int argc, char *argv[])
 {
-  fprintf(stderr, "{ main\n"); Indent ++;
+  PRINT(log_in, "main")
 
   if (argc < 2) {
     fprintf(stderr, "Usage: %s uri\n", argv[0]);
@@ -542,9 +502,9 @@ int main(int argc, char *argv[])
   /* send upgrade request */
   char req[1024];
   make_upgrade_request(req, settings, len, host, port, path);
-  log_data((unsigned char *)req, strlen(req));
+  HEXDUMP(req, strlen(req));
   rc = write(sock, req, strlen(req));
-  fprintf(stderr, "writen(%d)\n", rc);
+  fprintf(stderr, "written(%d)\n", rc);
 
   /* receive 101 switching protocols */
   char rcvbuf[1024] = {0};
@@ -574,7 +534,7 @@ int main(int argc, char *argv[])
   }
 
   if (h2session.upgrade_response_status != 101) {
-    fprintf(stderr, "HTTP Upgrade failed");
+    fprintf(stderr, "HTTP Upgrade failed\n");
     return -1;
   }
 
@@ -590,14 +550,14 @@ int main(int argc, char *argv[])
   FD_ZERO(&rset);
   while (1) {
     FD_SET(sock, &rset);
-     select(maxfd, &rset, NULL, NULL, NULL);
-     if (FD_ISSET(sock, &rset)) {
-        session_receive(&h2session, sock);
-        if (session_send(&h2session, sock) < 0)
-          break;
-     }
+    select(maxfd, &rset, NULL, NULL, NULL);
+    if (FD_ISSET(sock, &rset)) {
+      session_receive(&h2session, sock);
+      if (session_send(&h2session, sock) < 0)
+        break;
+    }
   }
 
-  -- Indent; fprintf(stderr, "} main\n");
+  PRINT(log_out, "main")
   return 0;
 }
