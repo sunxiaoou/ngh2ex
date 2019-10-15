@@ -509,6 +509,7 @@ int main(int argc, char *argv[])
   /* receive 101 switching protocols */
   char rcvbuf[1024] = {0};
   rc = read(sock, rcvbuf, sizeof(rcvbuf));
+  HEXDUMP(rcvbuf, rc);
   fprintf(stderr, "read(%d)\n", rc);
 
   http_parser_settings parser_settings = {

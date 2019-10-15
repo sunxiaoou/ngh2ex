@@ -1,5 +1,5 @@
 
-EXES=client libevent-client libevent-server simpclt rot13svr # h2evclt h2evsvr
+EXES=client libevent-client libevent-server simpclt simpsvr rot13svr h2clt # h2evsvr
 # simpclt simpsvr rot13svr rot13svr2 rot13svr3
 
 CC=cc
