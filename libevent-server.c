@@ -73,6 +73,8 @@
 
 #include <nghttp2/nghttp2.h>
 
+#include "log/log.h"
+
 #define OUTPUT_WOULDBLOCK_THRESHOLD (1 << 16)
 
 #define ARRLEN(x) (sizeof(x) / sizeof(x[0]))
@@ -109,47 +111,6 @@ struct app_context {
 static unsigned char next_proto_list[256];
 static size_t next_proto_list_len;
 
-static int Indent = 0;
-
-static void log_data(unsigned char *data, int len)
-{
-	unsigned char c;
-	char tmbuf[40];
-	int i, j, maxlen;
-
-  for(i = 0; i < len;){
-    fprintf(stderr, "%03x | ", i / 16);
-    maxlen = (len - i > 16) ? 16 : len - i;
-    for(j = 0; j < maxlen; j ++){
-      if(j && j % 4 == 0)
-        fprintf(stderr, " ");
-      fprintf(stderr, "%02X", *((unsigned char *)data + i + j));
-    }
-
-    for(; j < 16; j ++){
-      if(j && j % 4 == 0)
-        fprintf(stderr, " ");
-      fprintf(stderr, "  ");
-    }
-
-    fprintf(stderr, " | ");
-    for(j = 0; j < maxlen; j ++) {
-      c = *((unsigned char *)data + i + j);
-      if(c >= ' ' && c < 127 )
-        fprintf(stderr, "%c", c);
-      else
-        fprintf(stderr, ".");
-    }
-    for(; j < 16; j ++)
-      fprintf(stderr, " ");
-
-    i += maxlen;
-    if(i < len)
-      fprintf(stderr, "\n");
-  }
-
-  fprintf(stderr, "\n");
-}
 
 #ifndef OPENSSL_NO_NEXTPROTONEG
 static int next_proto_cb(SSL *ssl, const unsigned char **data,
@@ -240,8 +201,8 @@ static SSL *create_ssl(SSL_CTX *ssl_ctx) {
 
 static void add_stream(http2_session_data *session_data,
                        http2_stream_data *stream_data) {
-  fprintf(stderr, "%*c{ add_stream\n", 2 * Indent ++, ' ');                         
-                           
+  PRINT(log_in, "add_stream")
+
   stream_data->next = session_data->root.next;
   session_data->root.next = stream_data;
   stream_data->prev = &session_data->root;
@@ -249,13 +210,13 @@ static void add_stream(http2_session_data *session_data,
     stream_data->next->prev = stream_data;
   }
 
-  fprintf(stderr, "%*c} add_stream\n", 2 * -- Indent, ' ');
+  PRINT(log_out, "add_stream")
 }
 
 static void remove_stream(http2_session_data *session_data,
                           http2_stream_data *stream_data) {
-  fprintf(stderr, "%*c{ remove_stream\n", 2 * Indent ++, ' ');
-  
+  PRINT(log_in, "remove_stream")
+
   (void)session_data;
 
   stream_data->prev->next = stream_data->next;
@@ -263,13 +224,13 @@ static void remove_stream(http2_session_data *session_data,
     stream_data->next->prev = stream_data->prev;
   }
 
-  fprintf(stderr, "%*c} remove_stream\n", 2 * -- Indent, ' ');
+  PRINT(log_out, "remove_stream")
 }
 
 static http2_stream_data *
 create_http2_stream_data(http2_session_data *session_data, int32_t stream_id) {
-  fprintf(stderr, "%*c{ create_http2_stream_data\n", 2 * Indent ++, ' ');
-  
+  PRINT(log_in, "create_http2_stream_data")
+
   http2_stream_data *stream_data;
   stream_data = malloc(sizeof(http2_stream_data));
   memset(stream_data, 0, sizeof(http2_stream_data));
@@ -278,12 +239,12 @@ create_http2_stream_data(http2_session_data *session_data, int32_t stream_id) {
 
   add_stream(session_data, stream_data);
 
-  fprintf(stderr, "%*c} create_http2_stream_data\n", 2 * -- Indent, ' ');
+  PRINT(log_out, "create_http2_stream_data")
   return stream_data;
 }
 
 static void delete_http2_stream_data(http2_stream_data *stream_data) {
-  fprintf(stderr, "%*c{ delete_http2_stream_data\n", 2 * Indent ++, ' ');
+  PRINT(log_in, "delete_http2_stream_data")
 
   if (stream_data->fd != -1) {
     close(stream_data->fd);
@@ -291,15 +252,15 @@ static void delete_http2_stream_data(http2_stream_data *stream_data) {
   free(stream_data->request_path);
   free(stream_data);
 
-  fprintf(stderr, "%*c} delete_http2_stream_data\n", 2 * -- Indent, ' ');
+  PRINT(log_out, "delete_http2_stream_data")
 }
 
 static http2_session_data *create_http2_session_data(app_context *app_ctx,
                                                      int fd,
                                                      struct sockaddr *addr,
                                                      int addrlen) {
-  fprintf(stderr, "%*c{ create_http2_session_data\n", 2 * Indent ++, ' ');
-  
+  PRINT(log_in, "create_http2_session_data")
+
   int rv;
   http2_session_data *session_data;
   SSL *ssl;
@@ -323,13 +284,13 @@ static http2_session_data *create_http2_session_data(app_context *app_ctx,
     session_data->client_addr = strdup(host);
   }
 
-  fprintf(stderr, "%*c} create_http2_session_data\n", 2 * -- Indent, ' ');
+  PRINT(log_out, "create_http2_session_data")
   return session_data;
 }
 
 static void delete_http2_session_data(http2_session_data *session_data) {
-  fprintf(stderr, "%*c{ delete_http2_session_data\n", 2 * Indent ++, ' ');
-  
+  PRINT(log_in, "delete_http2_session_data")
+
   http2_stream_data *stream_data;
   SSL *ssl = bufferevent_openssl_get_ssl(session_data->bev);
   fprintf(stderr, "%s disconnected\n", session_data->client_addr);
@@ -338,7 +299,7 @@ static void delete_http2_session_data(http2_session_data *session_data) {
   }
   bufferevent_free(session_data->bev);
 
-  fprintf(stderr, "%*c nghttp2_session_del\n", 2 * Indent, ' ');
+  PRINT(log_still, "nghttp2_session_del")
   nghttp2_session_del(session_data->session);
   for (stream_data = session_data->root.next; stream_data;) {
     http2_stream_data *next = stream_data->next;
@@ -348,25 +309,25 @@ static void delete_http2_session_data(http2_session_data *session_data) {
   free(session_data->client_addr);
   free(session_data);
 
-  fprintf(stderr, "%*c} delete_http2_session_data\n", 2 * -- Indent, ' ');
+  PRINT(log_out, "delete_http2_session_data")
 }
 
 /* Serialize the frame and send (or buffer) the data to
    bufferevent. */
 static int session_send(http2_session_data *session_data) {
-  fprintf(stderr, "%*c{ session_send\n", 2 * Indent ++, ' ');
-  
+  PRINT(log_in, "session_send")
+
   int rv;
 
-  fprintf(stderr, "%*c nghttp2_session_send\n", 2 * Indent, ' ');
+  PRINT(log_still, "nghttp2_session_send")
   rv = nghttp2_session_send(session_data->session);
   if (rv != 0) {
     warnx("Fatal error: %s", nghttp2_strerror(rv));
-    fprintf(stderr, "%*c} session_send\n", 2 * -- Indent, ' ');
+    PRINT(log_out, "session_send")
     return -1;
   }
 
-  fprintf(stderr, "%*c} session_send2\n", 2 * -- Indent, ' ');
+  PRINT(log_out, "session_send2")
   return 0;
 }
 
@@ -375,40 +336,40 @@ static int session_send(http2_session_data *session_data) {
    additional pending frames, so call session_send() at the end of the
    function. */
 static int session_recv(http2_session_data *session_data) {
-  fprintf(stderr, "%*c{ session_recv\n", 2 * Indent ++, ' ');
-  
+  PRINT(log_in, "session_recv")
+
   ssize_t readlen;
   struct evbuffer *input = bufferevent_get_input(session_data->bev);
   size_t datalen = evbuffer_get_length(input);
   unsigned char *data = evbuffer_pullup(input, -1);
 
-  log_data(data, datalen);
-  fprintf(stderr, "%*c{ nghttp2_session_mem_recv\n", 2 * Indent ++, ' ');
+  HEXDUMP(data, datalen);
+  PRINT(log_in, "nghttp2_session_mem_recv")
   readlen = nghttp2_session_mem_recv(session_data->session, data, datalen);
-  fprintf(stderr, "%*c} nghttp2_session_mem_recv\n", 2 * -- Indent, ' ');
+  PRINT(log_out, "nghttp2_session_mem_recv")
   if (readlen < 0) {
     warnx("Fatal error: %s", nghttp2_strerror((int)readlen));
-    fprintf(stderr, "%*c} session_recv\n", 2 * -- Indent, ' ');
+    PRINT(log_out, "session_recv")
     return -1;
   }
   if (evbuffer_drain(input, (size_t)readlen) != 0) {
     warnx("Fatal error: evbuffer_drain failed");
-    fprintf(stderr, "%*c} session_recv2\n", 2 * -- Indent, ' ');
+    PRINT(log_out, "session_recv2")
     return -1;
   }
   if (session_send(session_data) != 0) {
-    fprintf(stderr, "%*c} session_recv3\n", 2 * -- Indent, ' ');
+    PRINT(log_out, "session_recv3")
     return -1;
   }
 
-  fprintf(stderr, "%*c} session_recv4\n", 2 * -- Indent, ' ');
+  PRINT(log_out, "session_recv4")
   return 0;
 }
 
 static ssize_t send_callback(nghttp2_session *session, const uint8_t *data,
                              size_t length, int flags, void *user_data) {
-  fprintf(stderr, "%*c{ send_callback\n", 2 * Indent ++, ' ');
-  
+  PRINT(log_in, "send_callback")
+
   http2_session_data *session_data = (http2_session_data *)user_data;
   struct bufferevent *bev = session_data->bev;
   (void)session;
@@ -418,14 +379,14 @@ static ssize_t send_callback(nghttp2_session *session, const uint8_t *data,
   if (evbuffer_get_length(bufferevent_get_output(session_data->bev)) >=
       OUTPUT_WOULDBLOCK_THRESHOLD) {
 
-    fprintf(stderr, "%*c} send_callback\n", 2 * -- Indent, ' ');    
+    PRINT(log_out, "send_callback")
     return NGHTTP2_ERR_WOULDBLOCK;
   }
 
-  log_data((unsigned char *)data, length);
+  HEXDUMP(data, length);
   bufferevent_write(bev, data, length);
 
-  fprintf(stderr, "%*c} send_callback2\n", 2 * -- Indent, ' ');
+  PRINT(log_out, "send_callback2")
   return (ssize_t)length;
 }
 
@@ -487,8 +448,8 @@ static ssize_t file_read_callback(nghttp2_session *session, int32_t stream_id,
                                   uint32_t *data_flags,
                                   nghttp2_data_source *source,
                                   void *user_data) {
-  fprintf(stderr, "%*c{ file_read_callback\n", 2 * Indent ++, ' ');
-  
+  PRINT(log_in, "file_read_callback")
+
   int fd = source->fd;
   ssize_t r;
   (void)session;
@@ -504,29 +465,29 @@ static ssize_t file_read_callback(nghttp2_session *session, int32_t stream_id,
     *data_flags |= NGHTTP2_DATA_FLAG_EOF;
   }
 
-  fprintf(stderr, "%*c} file_read_callback\n", 2 * -- Indent, ' ');
+  PRINT(log_out, "file_read_callback")
   return r;
 }
 
 static int send_response(nghttp2_session *session, int32_t stream_id,
                          nghttp2_nv *nva, size_t nvlen, int fd) {
-  fprintf(stderr, "%*c{ send_response\n", 2 * Indent ++, ' ');
+  PRINT(log_in, "send_response")
 
   int rv;
   nghttp2_data_provider data_prd;
   data_prd.source.fd = fd;
   data_prd.read_callback = file_read_callback;
 
-  fprintf(stderr, "%*c nghttp2_submit_response\n", 2 * Indent, ' ');  
+  PRINT(log_still, "nghttp2_submit_response")
   rv = nghttp2_submit_response(session, stream_id, nva, nvlen, &data_prd);
   if (rv != 0) {
     warnx("Fatal error: %s", nghttp2_strerror(rv));
 
-    fprintf(stderr, "%*c} send_response\n", 2 * -- Indent, ' ');
+    PRINT(log_out, "send_response")
     return -1;
   }
 
-  fprintf(stderr, "%*c} send_response2\n", 2 * -- Indent, ' ');
+  PRINT(log_out, "send_response2")
   return 0;
 }
 
@@ -535,7 +496,7 @@ static const char ERROR_HTML[] = "<html><head><title>404</title></head>"
 
 static int error_reply(nghttp2_session *session,
                        http2_stream_data *stream_data) {
-  fprintf(stderr, "%*c{ error_reply\n", 2 * Indent ++, ' ');
+  PRINT(log_in, "error_reply")
 
   int rv;
   ssize_t writelen;
@@ -550,11 +511,11 @@ static int error_reply(nghttp2_session *session,
                                    NGHTTP2_INTERNAL_ERROR);
     if (rv != 0) {
       warnx("Fatal error: %s", nghttp2_strerror(rv));
-      fprintf(stderr, "%*c} error_reply\n", 2 * -- Indent, ' ');
+      PRINT(log_out, "error_reply")
       return -1;
     }
-    
-    fprintf(stderr, "%*c} error_reply2\n", 2 * -- Indent, ' ');
+
+    PRINT(log_out, "error_reply2")
     return 0;
   }
 
@@ -564,7 +525,7 @@ static int error_reply(nghttp2_session *session,
   if (writelen != sizeof(ERROR_HTML) - 1) {
     close(pipefd[0]);
 
-    fprintf(stderr, "%*c} error_reply3\n", 2 * -- Indent, ' ');
+    PRINT(log_out, "error_reply3")
     return -1;
   }
 
@@ -574,11 +535,11 @@ static int error_reply(nghttp2_session *session,
                     pipefd[0]) != 0) {
     close(pipefd[0]);
 
-    fprintf(stderr, "%*c} error_reply4\n", 2 * -- Indent, ' ');
+    PRINT(log_out, "error_reply4")
     return -1;
   }
 
-  fprintf(stderr, "%*c} error_reply5\n", 2 * -- Indent, ' ');
+  PRINT(log_out, "error_reply5")
   return 0;
 }
 
@@ -588,8 +549,8 @@ static int on_header_callback(nghttp2_session *session,
                               const nghttp2_frame *frame, const uint8_t *name,
                               size_t namelen, const uint8_t *value,
                               size_t valuelen, uint8_t flags, void *user_data) {
-  fprintf(stderr, "%*c{ on_header_callback\n", 2 * Indent ++, ' ');
-  
+  PRINT(log_in, "on_header_callback")
+
   http2_stream_data *stream_data;
   const char PATH[] = ":path";
   (void)flags;
@@ -601,7 +562,7 @@ static int on_header_callback(nghttp2_session *session,
       break;
     }
 
-    fprintf(stderr, "%*c nghttp2_session_get_stream_user_data\n", 2 * Indent, ' '); 
+    PRINT(log_still, "nghttp2_session_get_stream_user_data")
     stream_data =
         nghttp2_session_get_stream_user_data(session, frame->hd.stream_id);
     if (!stream_data || stream_data->request_path) {
@@ -616,30 +577,30 @@ static int on_header_callback(nghttp2_session *session,
     break;
   }
 
-  fprintf(stderr, "%*c} on_header_callback\n", 2 * -- Indent, ' ');
+  PRINT(log_out, "on_header_callback")
   return 0;
 }
 
 static int on_begin_headers_callback(nghttp2_session *session,
                                      const nghttp2_frame *frame,
                                      void *user_data) {
-  fprintf(stderr, "%*c{ on_begin_headers_callback\n", 2 * Indent ++, ' ');
+  PRINT(log_in, "on_begin_headers_callback")
 
   http2_session_data *session_data = (http2_session_data *)user_data;
   http2_stream_data *stream_data;
 
   if (frame->hd.type != NGHTTP2_HEADERS ||
       frame->headers.cat != NGHTTP2_HCAT_REQUEST) {
-    fprintf(stderr, "%*c} on_begin_headers_callback\n", 2 * -- Indent, ' ');    
+    PRINT(log_out, "on_begin_headers_callback")
     return 0;
   }
   stream_data = create_http2_stream_data(session_data, frame->hd.stream_id);
-  
-  fprintf(stderr, "%*c nghttp2_session_set_stream_user_data\n", 2 * Indent, ' '); 
+
+  PRINT(log_still, "nghttp2_session_set_stream_user_data")
   nghttp2_session_set_stream_user_data(session, frame->hd.stream_id,
                                        stream_data);
-  
-  fprintf(stderr, "%*c} on_begin_headers_callback2\n", 2 * -- Indent, ' ');    
+
+  PRINT(log_out, "on_begin_headers_callback2")
   return 0;
 }
 
@@ -647,8 +608,8 @@ static int on_begin_headers_callback(nghttp2_session *session,
    safe. */
 static int check_path(const char *path) {
   /* We don't like '\' in url. */
-  fprintf(stderr, "%*c{ check_path\n", 2 * Indent ++, ' ');
-  fprintf(stderr, "%*c} check_path\n", 2 * -- Indent, ' ');
+  PRINT(log_in, "check_path")
+  PRINT(log_out, "check_path")
   return path[0] && path[0] == '/' && strchr(path, '\\') == NULL &&
          strstr(path, "/../") == NULL && strstr(path, "/./") == NULL &&
          !ends_with(path, "/..") && !ends_with(path, "/.");
@@ -657,30 +618,30 @@ static int check_path(const char *path) {
 static int on_request_recv(nghttp2_session *session,
                            http2_session_data *session_data,
                            http2_stream_data *stream_data) {
-  fprintf(stderr, "%*c{ on_request_recv\n", 2 * Indent ++, ' ');
-  
+  PRINT(log_in, "on_request_recv")
+
   int fd;
   nghttp2_nv hdrs[] = {MAKE_NV(":status", "200")};
   char *rel_path;
 
   if (!stream_data->request_path) {
     if (error_reply(session, stream_data) != 0) {
-      fprintf(stderr, "%*c} on_request_recv1\n", 2 * -- Indent, ' ');
+      PRINT(log_out, "on_request_recv1")
       return NGHTTP2_ERR_CALLBACK_FAILURE;
     }
 
-    fprintf(stderr, "%*c} on_request_recv2\n", 2 * -- Indent, ' ');
+    PRINT(log_out, "on_request_recv2")
     return 0;
   }
   fprintf(stderr, "%s GET %s\n", session_data->client_addr,
           stream_data->request_path);
   if (!check_path(stream_data->request_path)) {
     if (error_reply(session, stream_data) != 0) {
-      fprintf(stderr, "%*c} on_request_recv3\n", 2 * -- Indent, ' ');
+      PRINT(log_out, "on_request_recv3")
       return NGHTTP2_ERR_CALLBACK_FAILURE;
     }
-    
-    fprintf(stderr, "%*c} on_request_recv4\n", 2 * -- Indent, ' ');
+
+    PRINT(log_out, "on_request_recv4")
     return 0;
   }
   for (rel_path = stream_data->request_path; *rel_path == '/'; ++rel_path)
@@ -688,11 +649,11 @@ static int on_request_recv(nghttp2_session *session,
   fd = open(rel_path, O_RDONLY);
   if (fd == -1) {
     if (error_reply(session, stream_data) != 0) {
-      fprintf(stderr, "%*c} on_request_recv5\n", 2 * -- Indent, ' ');
+      PRINT(log_out, "on_request_recv5")
       return NGHTTP2_ERR_CALLBACK_FAILURE;
     }
 
-    fprintf(stderr, "%*c} on_request_recv6\n", 2 * -- Indent, ' ');
+    PRINT(log_out, "on_request_recv6")
     return 0;
   }
   stream_data->fd = fd;
@@ -700,18 +661,18 @@ static int on_request_recv(nghttp2_session *session,
   if (send_response(session, stream_data->stream_id, hdrs, ARRLEN(hdrs), fd) !=
       0) {
     close(fd);
-    fprintf(stderr, "%*c} on_request_recv7\n", 2 * -- Indent, ' ');
+    PRINT(log_out, "on_request_recv7")
     return NGHTTP2_ERR_CALLBACK_FAILURE;
   }
 
-  fprintf(stderr, "%*c} on_request_recv8\n", 2 * -- Indent, ' ');
+  PRINT(log_out, "on_request_recv8")
   return 0;
 }
 
 static int on_frame_recv_callback(nghttp2_session *session,
                                   const nghttp2_frame *frame, void *user_data) {
-  fprintf(stderr, "%*c{ on_frame_recv_callback\n", 2 * Indent ++, ' ');
-  
+  PRINT(log_in, "on_frame_recv_callback")
+
   http2_session_data *session_data = (http2_session_data *)user_data;
   http2_stream_data *stream_data;
   switch (frame->hd.type) {
@@ -719,16 +680,16 @@ static int on_frame_recv_callback(nghttp2_session *session,
   case NGHTTP2_HEADERS:
     /* Check that the client request has finished */
     if (frame->hd.flags & NGHTTP2_FLAG_END_STREAM) {
-      fprintf(stderr, "%*c nghttp2_session_get_stream_user_data\n", 2 * Indent, ' ');
+      PRINT(log_still, "nghttp2_session_get_stream_user_data")
       stream_data =
           nghttp2_session_get_stream_user_data(session, frame->hd.stream_id);
       /* For DATA and HEADERS frame, this callback may be called after
          on_stream_close_callback. Check that stream still alive. */
       if (!stream_data) {
-        fprintf(stderr, "%*c} on_frame_recv_callback\n", 2 * -- Indent, ' ');
+        PRINT(log_out, "on_frame_recv_callback")
         return 0;
       }
-      fprintf(stderr, "%*c} on_frame_recv_callback2\n", 2 * -- Indent, ' ');
+      PRINT(log_out, "on_frame_recv_callback2")
       return on_request_recv(session, session_data, stream_data);
     }
     break;
@@ -736,33 +697,33 @@ static int on_frame_recv_callback(nghttp2_session *session,
     break;
   }
 
-  fprintf(stderr, "%*c} on_frame_recv_callback3\n", 2 * -- Indent, ' ');
+  PRINT(log_out, "on_frame_recv_callback3")
   return 0;
 }
 
 static int on_stream_close_callback(nghttp2_session *session, int32_t stream_id,
                                     uint32_t error_code, void *user_data) {
-  fprintf(stderr, "%*c{ on_stream_close_callback\n", 2 * Indent ++, ' ');
-  
+  PRINT(log_in, "on_stream_close_callback")
+
   http2_session_data *session_data = (http2_session_data *)user_data;
   http2_stream_data *stream_data;
   (void)error_code;
 
-  fprintf(stderr, "%*c nghttp2_session_get_stream_user_data\n", 2 * Indent, ' ');
+  PRINT(log_still, "nghttp2_session_get_stream_user_data")
   stream_data = nghttp2_session_get_stream_user_data(session, stream_id);
   if (!stream_data) {
-    fprintf(stderr, "%*c} on_stream_close_callback\n", 2 * -- Indent, ' ');
+    PRINT(log_out, "on_stream_close_callback")
     return 0;
   }
   remove_stream(session_data, stream_data);
   delete_http2_stream_data(stream_data);
 
-  fprintf(stderr, "%*c} on_stream_close_callback2\n", 2 * -- Indent, ' ');
+  PRINT(log_out, "on_stream_close_callback2")
   return 0;
 }
 
 static void initialize_nghttp2_session(http2_session_data *session_data) {
-  fprintf(stderr, "%*c{ initialize_nghttp2_session\n", 2 * Indent ++, ' ');
+  PRINT(log_in, "initialize_nghttp2_session")
 
   nghttp2_session_callbacks *callbacks;
 
@@ -782,46 +743,46 @@ static void initialize_nghttp2_session(http2_session_data *session_data) {
   nghttp2_session_callbacks_set_on_begin_headers_callback(
       callbacks, on_begin_headers_callback);
 
-  fprintf(stderr, "%*c nghttp2_session_server_new\n", 2 * Indent, ' ');
+  PRINT(log_still, "nghttp2_session_server_new")
   nghttp2_session_server_new(&session_data->session, callbacks, session_data);
 
   nghttp2_session_callbacks_del(callbacks);
 
-  fprintf(stderr, "%*c} initialize_nghttp2_session\n", 2 * -- Indent, ' ');
+  PRINT(log_out, "initialize_nghttp2_session")
 }
 
 /* Send HTTP/2 client connection header, which includes 24 bytes
    magic octets and SETTINGS frame */
 static int send_server_connection_header(http2_session_data *session_data) {
-  fprintf(stderr, "%*c{ send_server_connection_header\n", 2 * Indent ++, ' ');
+  PRINT(log_in, "send_server_connection_header")
   nghttp2_settings_entry iv[1] = {
       {NGHTTP2_SETTINGS_MAX_CONCURRENT_STREAMS, 100}};
   int rv;
 
-  fprintf(stderr, "%*c nghttp2_submit_settings\n", 2 * Indent, ' ');
+  PRINT(log_still, "nghttp2_submit_settings")
   rv = nghttp2_submit_settings(session_data->session, NGHTTP2_FLAG_NONE, iv,
                                ARRLEN(iv));
   if (rv != 0) {
     warnx("Fatal error: %s", nghttp2_strerror(rv));
     return -1;
   }
-  fprintf(stderr, "%*c} send_server_connection_header\n", 2 * -- Indent, ' ');
+  PRINT(log_out, "send_server_connection_header")
   return 0;
 }
 
 /* readcb for bufferevent after client connection header was
    checked. */
 static void readcb(struct bufferevent *bev, void *ptr) {
-  fprintf(stderr, "%*c{ readcb\n", 2 * Indent ++, ' ');
+  PRINT(log_in, "readcb")
   http2_session_data *session_data = (http2_session_data *)ptr;
   (void)bev;
 
   if (session_recv(session_data) != 0) {
     delete_http2_session_data(session_data);
-    fprintf(stderr, "%*c} readcb\n", 2 * -- Indent, ' ');
+    PRINT(log_out, "readcb")
     return;
   }
-  fprintf(stderr, "%*c} readcb2\n", 2 * -- Indent, ' ');
+  PRINT(log_out, "readcb2")
 }
 
 /* writecb for bufferevent. To greaceful shutdown after sending or
@@ -833,29 +794,29 @@ static void readcb(struct bufferevent *bev, void *ptr) {
    because we have a threshold on the buffer size to avoid too much
    buffering. See send_callback(). */
 static void writecb(struct bufferevent *bev, void *ptr) {
-  fprintf(stderr, "%*c{ writecb\n", 2 * Indent ++, ' ');
+  PRINT(log_in, "writecb")
   http2_session_data *session_data = (http2_session_data *)ptr;
   if (evbuffer_get_length(bufferevent_get_output(bev)) > 0) {
-    fprintf(stderr, "%*c} writecb\n", 2 * -- Indent, ' ');
+    PRINT(log_out, "writecb")
     return;
   }
   if (nghttp2_session_want_read(session_data->session) == 0 &&
       nghttp2_session_want_write(session_data->session) == 0) {
     delete_http2_session_data(session_data);
-    fprintf(stderr, "%*c} writecb2\n", 2 * -- Indent, ' ');
+    PRINT(log_out, "writecb2")
     return;
   }
   if (session_send(session_data) != 0) {
     delete_http2_session_data(session_data);
-    fprintf(stderr, "%*c} writecb3\n", 2 * -- Indent, ' ');
+    PRINT(log_out, "writecb3")
     return;
   }
-  fprintf(stderr, "%*c} writecb4\n", 2 * -- Indent, ' ');
+  PRINT(log_out, "writecb4")
 }
 
 /* eventcb for bufferevent */
 static void eventcb(struct bufferevent *bev, short events, void *ptr) {
-  fprintf(stderr, "%*c{ eventcb\n", 2 * Indent ++, ' ');
+  PRINT(log_in, "eventcb")
   http2_session_data *session_data = (http2_session_data *)ptr;
   if (events & BEV_EVENT_CONNECTED) {
     const unsigned char *alpn = NULL;
@@ -879,7 +840,7 @@ static void eventcb(struct bufferevent *bev, short events, void *ptr) {
     if (alpn == NULL || alpnlen != 2 || memcmp("h2", alpn, 2) != 0) {
       fprintf(stderr, "%s h2 is not negotiated\n", session_data->client_addr);
       delete_http2_session_data(session_data);
-      fprintf(stderr, "%*c} eventcb\n", 2 * -- Indent, ' ');
+      PRINT(log_out, "eventcb")
       return;
     }
 
@@ -888,11 +849,11 @@ static void eventcb(struct bufferevent *bev, short events, void *ptr) {
     if (send_server_connection_header(session_data) != 0 ||
         session_send(session_data) != 0) {
       delete_http2_session_data(session_data);
-      fprintf(stderr, "%*c} eventcb2\n", 2 * -- Indent, ' ');
+      PRINT(log_out, "eventcb2")
       return;
     }
 
-    fprintf(stderr, "%*c} eventcb3\n", 2 * -- Indent, ' ');
+    PRINT(log_out, "eventcb3")
     return;
   }
   if (events & BEV_EVENT_EOF) {
@@ -903,13 +864,13 @@ static void eventcb(struct bufferevent *bev, short events, void *ptr) {
     fprintf(stderr, "%s timeout\n", session_data->client_addr);
   }
   delete_http2_session_data(session_data);
-  fprintf(stderr, "%*c} eventcb4\n", 2 * -- Indent, ' ');
+  PRINT(log_out, "eventcb4")
 }
 
 /* callback for evconnlistener */
 static void acceptcb(struct evconnlistener *listener, int fd,
                      struct sockaddr *addr, int addrlen, void *arg) {
-  fprintf(stderr, "%*c{ acceptcb\n", 2 * Indent ++, ' ');                     
+  PRINT(log_in, "acceptcb")
   app_context *app_ctx = (app_context *)arg;
   http2_session_data *session_data;
   (void)listener;
@@ -917,12 +878,12 @@ static void acceptcb(struct evconnlistener *listener, int fd,
   session_data = create_http2_session_data(app_ctx, fd, addr, addrlen);
 
   bufferevent_setcb(session_data->bev, readcb, writecb, eventcb, session_data);
-  fprintf(stderr, "%*c} acceptcb\n", 2 * -- Indent, ' ');
+  PRINT(log_out, "acceptcb")
 }
 
 static void start_listen(struct event_base *evbase, const char *service,
                          app_context *app_ctx) {
-  fprintf(stderr, "%*c{ start_listen\n", 2 * Indent ++, ' ');                         
+  PRINT(log_in, "start_listen")
   int rv;
   struct addrinfo hints;
   struct addrinfo *res, *rp;
@@ -947,7 +908,7 @@ static void start_listen(struct event_base *evbase, const char *service,
     if (listener) {
       freeaddrinfo(res);
 
-      fprintf(stderr, "%*c} start_listen\n", 2 * -- Indent, ' ');                         
+      PRINT(log_out, "start_listen")
       return;
     }
   }
@@ -956,16 +917,16 @@ static void start_listen(struct event_base *evbase, const char *service,
 
 static void initialize_app_context(app_context *app_ctx, SSL_CTX *ssl_ctx,
                                    struct event_base *evbase) {
-  fprintf(stderr, "%*c{ initialize_app_context\n", 2 * Indent ++, ' ');
+  PRINT(log_in, "initialize_app_context")
   memset(app_ctx, 0, sizeof(app_context));
   app_ctx->ssl_ctx = ssl_ctx;
   app_ctx->evbase = evbase;
-  fprintf(stderr, "%*c} initialize_app_context\n", 2 * -- Indent, ' ');
+  PRINT(log_out, "initialize_app_context")
 }
 
 static void run(const char *service, const char *key_file,
                 const char *cert_file) {
-  fprintf(stderr, "%*c{ Run\n", 2 * Indent ++, ' ');
+  PRINT(log_in, "Run")
   SSL_CTX *ssl_ctx;
   app_context app_ctx;
   struct event_base *evbase;
@@ -979,7 +940,7 @@ static void run(const char *service, const char *key_file,
 
   event_base_free(evbase);
   SSL_CTX_free(ssl_ctx);
-  fprintf(stderr, "%*c} Run\n", 2 * -- Indent, ' ');
+  PRINT(log_out, "Run")
 }
 
 int main(int argc, char **argv) {

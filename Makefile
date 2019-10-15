@@ -1,5 +1,5 @@
 
-EXES=client libevent-client libevent-server h2evclt h2evsvr
+EXES=client libevent-client libevent-server simpclt rot13svr # h2evclt h2evsvr
 # simpclt simpsvr rot13svr rot13svr2 rot13svr3
 
 CC=cc
@@ -24,6 +24,9 @@ cdecode.o: b64/cdecode.c
 cencode.o: b64/cencode.c
 	$(CC) -c -g $<
 
+log.o: log/log.c
+	$(CC) -c -g $<
+
 client.o: client.c
 	$(CC) $(CFLAG) $<
 client: client.o http_parser.o
@@ -36,8 +39,8 @@ libevent-client: libevent-client.o http_parser.o
 
 libevent-server.o: libevent-server.c
 	$(CC) $(CFLAG) $<
-libevent-server: libevent-server.o
-	$(CC) -o $@ $< $(LDFLAG2)  
+libevent-server: libevent-server.o log.o
+	$(CC) -o $@ $< log.o $(LDFLAG2)
 
 h2evclt.o: h2evclt.c
 	$(CC) $(CFLAG) $<
@@ -61,8 +64,8 @@ simpsvr: simpsvr.o
 
 rot13svr.o: rot13svr.c
 	$(CC) $(CFLAG) $<
-rot13svr: rot13svr.o
-	$(CC) -o $@ $<
+rot13svr: rot13svr.o log.o
+	$(CC) -o $@ $< log.o
 
 rot13svr2.o: rot13svr2.c
 	$(CC) $(CFLAG) $<
@@ -77,8 +80,8 @@ rot13svr3: rot13svr3.o
 h2clt.o: h2clt.c
 	$(CC) $(CFLAG) $<
 h2clt: h2clt.o
-h2clt: h2clt.o http_parser.o cencode.o
-	$(CC) -o $@ $< http_parser.o cencode.o $(LDFLAG)
+h2clt: h2clt.o http_parser.o cencode.o log.o
+	$(CC) -o $@ $< http_parser.o cencode.o log.o $(LDFLAG)
 
 clean:
 	rm -f *.o $(EXES)

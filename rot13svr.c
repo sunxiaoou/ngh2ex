@@ -14,9 +14,9 @@
 #include <stdio.h>
 #include <errno.h>
 
-#define MAX_LINE 16384
+#include "log/log.h"
 
-static int Indent = 0;
+#define MAX_LINE 16384
 
 static void log_data(unsigned char *data, int len)
 {
@@ -103,7 +103,7 @@ make_nonblocking(int fd)
 int
 do_read(int fd, struct fd_state *state)
 {
-    fprintf(stderr, "%*c{ do_read\n", 2 * Indent ++, ' ');
+    PRINT(log_in, "do_read")
 
     char buf[1024];
     int i;
@@ -127,14 +127,14 @@ do_read(int fd, struct fd_state *state)
                 break;
             }
             else {
-                fprintf(stderr, "%*c} do_read\n", 2 * -- Indent, ' ');
+                PRINT(log_out, "do_read")
                 return -1;
             }
         }
-        
+
         else if (result == 0) {
             /* no messages are available to be received and the peer has performed an orderly shutdown */
-            fprintf(stderr, "%*c} do_read2\n", 2 * -- Indent, ' ');
+            PRINT(log_out, "do_read2")
             return 1;
         }
 
@@ -146,15 +146,15 @@ do_read(int fd, struct fd_state *state)
         state->buffer[i] = rot13_char(state->buffer[i]);
     }
     state->writing = 1;
-    
-    fprintf(stderr, "%*c} do_read3\n", 2 * -- Indent, ' ');
+
+    PRINT(log_out, "do_read3")
     return 0;
 }
 
 int
 do_write(int fd, struct fd_state *state)
 {
-    fprintf(stderr, "%*c{ do_write\n", 2 * Indent ++, ' ');
+    PRINT(log_in, "do_write")
 
     size_t n_written = 0;
     while (n_written < state->buffer_used) {
@@ -162,11 +162,11 @@ do_write(int fd, struct fd_state *state)
                               state->buffer_used - n_written, 0);
         if (result < 0) {
             if (errno == EAGAIN) {
-                fprintf(stderr, "%*c} do_write\n", 2 * -- Indent, ' ');
+                PRINT(log_out, "do_write")
                 return 0;
             }
 
-            fprintf(stderr, "%*c} do_write2\n", 2 * -- Indent, ' ');    
+            PRINT(log_out, "do_write2")
             return -1;
         }
         assert(result != 0);
@@ -181,14 +181,14 @@ do_write(int fd, struct fd_state *state)
 
     state->writing = 0;
 
-    fprintf(stderr, "%*c} do_write3\n", 2 * -- Indent, ' ');
+    PRINT(log_out, "do_write3")
     return 0;
 }
 
 void
 run(void)
 {
-    fprintf(stderr, "%*c{ run\n", 2 * Indent ++, ' ');
+    PRINT(log_in, "run")
 
     int listener;
     struct fd_state *state[FD_SETSIZE];
@@ -215,13 +215,13 @@ run(void)
 
     if (bind(listener, (struct sockaddr*)&sin, sizeof(sin)) < 0) {
         perror("bind");
-        fprintf(stderr, "%*c} run\n", 2 * -- Indent, ' ');
+        PRINT(log_out, "run")
         return;
     }
 
     if (listen(listener, 16)<0) {
         perror("listen");
-        fprintf(stderr, "%*c} run2\n", 2 * -- Indent, ' ');
+        PRINT(log_out, "run2")
         return;
     }
 
@@ -251,7 +251,7 @@ run(void)
 
         if (select(maxfd+1, &readset, &writeset, &exset, NULL) < 0) {
             perror("select");
-            fprintf(stderr, "%*c} run3\n", 2 * -- Indent, ' ');
+            PRINT(log_out, "run3")
             return;
         }
 
@@ -289,17 +289,14 @@ run(void)
         }
     }
 
-    fprintf(stderr, "%*c} run4\n", 2 * -- Indent, ' ');
+    PRINT(log_out, "run4")
 }
 
 int
 main(int c, char **v)
 {
-    fprintf(stderr, "{ main\n"); Indent ++;
-
     setvbuf(stdout, NULL, _IONBF, 0);
-
     run();
-     -- Indent; fprintf(stderr, "} main\n");
+
     return 0;
 }
