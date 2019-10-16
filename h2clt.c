@@ -104,20 +104,6 @@ static int parser_completecb(http_parser *parser) {
   return 0;
 }
 
-static ssize_t send_callback(nghttp2_session *session, const uint8_t *data, size_t length, int flags, void *user_data) {
-  PRINT(log_in, "send_callback")
-
-  http2_session_data *session_data = (http2_session_data *)user_data;
-  (void)session;
-  (void)flags;
-
-  HEXDUMP(data, length);
-  // bufferevent_write(bev, data, length);
-
-  PRINT(log_out, "send_callback")
-  return (ssize_t)length;
-}
-
 static void print_header(FILE *f, const uint8_t *name, size_t namelen,
                          const uint8_t *value, size_t valuelen) {
   fwrite(name, 1, namelen, f);
@@ -377,7 +363,6 @@ static int initialize_nghttp2_session(http2_session_data *psession, unsigned cha
   nghttp2_session_callbacks *callbacks;
 
   nghttp2_session_callbacks_new(&callbacks);
-  nghttp2_session_callbacks_set_send_callback(callbacks, send_callback);
   nghttp2_session_callbacks_set_on_frame_recv_callback(callbacks, on_frame_recv_callback);
   nghttp2_session_callbacks_set_on_data_chunk_recv_callback(callbacks, on_data_chunk_recv_callback);
   nghttp2_session_callbacks_set_on_stream_close_callback(callbacks, on_stream_close_callback);
