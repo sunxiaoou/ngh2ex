@@ -438,8 +438,6 @@ static int session_receive(http2_session_data *psession, int sock) {
   unsigned char rcvbuf[1024];
 
   int len = read(sock, rcvbuf, sizeof(rcvbuf));
-  if (len > 20 && rcvbuf[16] == 2 && rcvbuf[20] == 1) // workaround for Bug 30267014
-    rcvbuf[20] = 0;
   HEXDUMP(rcvbuf, len);
   PRINT(log_in, "nghttp2_session_mem_recv")
   len = nghttp2_session_mem_recv(psession->session, (uint8_t *)rcvbuf, len);
