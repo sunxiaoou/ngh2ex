@@ -1,6 +1,10 @@
 #ifndef LOG_H_
 #define LOG_H_
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 extern int Indent;
 
 extern char *log_in(char *);
@@ -12,5 +16,9 @@ extern char *log_hexdump(unsigned char *, int);
 #define PRINT(M, S) fprintf(stderr, "%s\n", M((char *)S));
 
 #define HEXDUMP(B, L) fprintf(stderr, "%s\n", log_hexdump((unsigned char *)(B), L));
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif // LOG_H_
