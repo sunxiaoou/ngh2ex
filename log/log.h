@@ -13,7 +13,7 @@ extern char *log_still(char *);
 extern char *log_hexdump(unsigned char *, int);
 
 
-#define PRINT(M, S) fprintf(stderr, "%s\n", M((char *)S));
+#define PRINT(M, S) fprintf(stderr, "%s  %s(%d)\n", M((char *)S), __FILE__, __LINE__);
 
 #define HEXDUMP(B, L) fprintf(stderr, "%s\n", log_hexdump((unsigned char *)(B), L));
 
