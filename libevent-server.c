@@ -319,8 +319,9 @@ static int session_send(http2_session_data *session_data) {
 
   int rv;
 
-  PRINT(log_still, "nghttp2_session_send")
+  PRINT(log_in, "nghttp2_session_send")
   rv = nghttp2_session_send(session_data->session);
+  PRINT(log_out, "nghttp2_session_send")
   if (rv != 0) {
     warnx("Fatal error: %s", nghttp2_strerror(rv));
     PRINT(log_out, "session_send")
@@ -608,8 +609,7 @@ static int on_begin_headers_callback(nghttp2_session *session,
    safe. */
 static int check_path(const char *path) {
   /* We don't like '\' in url. */
-  PRINT(log_in, "check_path")
-  PRINT(log_out, "check_path")
+  PRINT(log_still, "check_path")
   return path[0] && path[0] == '/' && strchr(path, '\\') == NULL &&
          strstr(path, "/../") == NULL && strstr(path, "/./") == NULL &&
          !ends_with(path, "/..") && !ends_with(path, "/.");
@@ -689,8 +689,10 @@ static int on_frame_recv_callback(nghttp2_session *session,
         PRINT(log_out, "on_frame_recv_callback")
         return 0;
       }
+
+      int rc = on_request_recv(session, session_data, stream_data);
       PRINT(log_out, "on_frame_recv_callback2")
-      return on_request_recv(session, session_data, stream_data);
+      return rc; 
     }
     break;
   default:
