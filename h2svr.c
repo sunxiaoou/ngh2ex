@@ -35,55 +35,55 @@ typedef struct http2_session_data {
 } http2_session_data;
 
 static int listen_to(int port, int nlisten) {
-	PRINT(log_in, "listen_to")
+  PRINT(log_in, "listen_to")
 
-	int sock = socket(AF_INET, SOCK_STREAM, 0);
-	if (socket < 0) {
-		perror("socket failed");
-		PRINT(log_out, "listen_to")
+  int sock = socket(AF_INET, SOCK_STREAM, 0);
+  if (socket < 0) {
+    perror("socket failed");
+    PRINT(log_out, "listen_to")
     return -1;
-	}
-	
-	struct sockaddr_in sin;
-	memset(&sin, 0, sizeof(struct sockaddr_in));
-	sin.sin_family = AF_INET;
-	sin.sin_addr.s_addr = htonl(INADDR_ANY);
-	sin.sin_port = htons(port);
+  }
 
-	int rc = bind(sock, (struct sockaddr *)(&sin), sizeof(struct sockaddr_in));
-	if (rc < 0) {
+  struct sockaddr_in sin;
+  memset(&sin, 0, sizeof(struct sockaddr_in));
+  sin.sin_family = AF_INET;
+  sin.sin_addr.s_addr = htonl(INADDR_ANY);
+  sin.sin_port = htons(port);
+
+  int rc = bind(sock, (struct sockaddr *)(&sin), sizeof(struct sockaddr_in));
+  if (rc < 0) {
     perror("bind failed");
-		close(sock);
+    close(sock);
     PRINT(log_out, "listen_to2")
-		return -1;
-	}
+    return -1;
+  }
 
-	rc = listen(sock, nlisten);
-	if (rc < 0) {
+  rc = listen(sock, nlisten);
+  if (rc < 0) {
     perror("listen failed");
-		close(sock);
+    close(sock);
     PRINT(log_out, "listen_to3")
-		return -1;
-	}
+    return -1;
+  }
 
   PRINT(log_out, "listen_to4")
-	return sock;
+  return sock;
 }
 
 static int accept_to(int listener) {
   PRINT(log_in, "accept_to")
 
-	struct sockaddr_in sin;
-	unsigned long len = sizeof(struct sockaddr_in);
-	int sock = accept(listener, (struct sockaddr *)(&sin), (socklen_t *)&len);
-	if (sock < 0) {
+  struct sockaddr_in sin;
+  unsigned long len = sizeof(struct sockaddr_in);
+  int sock = accept(listener, (struct sockaddr *)(&sin), (socklen_t *)&len);
+  if (sock < 0) {
     perror("accept");
     PRINT(log_out, "accept_to")
     return -1;
-	}
+  }
 
   PRINT(log_out, "accept_to2")
-	return sock;
+  return sock;
 }
 
 static int htp_uricb(http_parser *htp, const char *data, size_t len) {
