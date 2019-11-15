@@ -13,7 +13,6 @@
 #include "http-parser/http_parser.h"
 #include "log/log.h"
 
-#define PORT 8080
 #define ARRLEN(x) (sizeof(x) / sizeof(x[0]))
 #define MAKE_NV(NAME, VALUE)                                                   \
   {                                                                            \
@@ -473,9 +472,14 @@ static int session_receive(http2_session_data *psession, int sock) {
 }
 
 int main(int argc, char const *argv[]) {
+  if (argc < 2) {
+    fprintf(stderr, "Usage: %s port\n", argv[0]);
+    return 1;
+  }
+
   PRINT(log_in, "main")
 
-  int listener = listen_to(PORT, 3);
+  int listener = listen_to(atoi(argv[1]), 3);
   if (listener < 0) {
     PRINT(log_out, "main")
     return -1;

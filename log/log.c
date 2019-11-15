@@ -20,7 +20,7 @@ char *log_in(char *p) {
 }
 
 char *log_out(char *p) {
-  static char str[128]; 
+  static char str[128];
   char *s;
 
   if (! -- Indent) {
@@ -61,7 +61,7 @@ char *log_hexdump(unsigned char *data, int len) {
   static char str[2048];
   memset(str, 0, sizeof(str));
   char *s = str;
-  
+
   // fprintf(stderr, "len(%d)\n", len);
   APPEND2("len(%d)\n", len)
   for(i = 0; i < len;){
@@ -146,7 +146,7 @@ void B_f() {
 
 int main() {
   PRINT(log_in, "main")
-  
+
   B_f();
 
   char buf[] = ": slc09wsz.us.or";
