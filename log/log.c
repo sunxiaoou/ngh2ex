@@ -3,10 +3,10 @@
 
 #include "log.h"
 
-int Indent = 0;
+static int Indent = 0;
 
 char *log_in(char *p) {
-  char str[128];
+  static char str[128];
   char *s;
 
   if (! Indent) {
@@ -20,7 +20,7 @@ char *log_in(char *p) {
 }
 
 char *log_out(char *p) {
-  char str[128]; 
+  static char str[128]; 
   char *s;
 
   if (! -- Indent) {
@@ -33,7 +33,7 @@ char *log_out(char *p) {
 }
 
 char *log_still(char *p) {
-  char str[128];
+  static char str[128];
   char *s;
 
   if (! Indent) {
@@ -112,10 +112,46 @@ char *log_hexdump(unsigned char *data, int len) {
 }
 
 #if 0
-int main() {
-  char buf[] = ": slc09wsz.us.or";
 
+typedef void (*Func)();
+
+struct A {
+    Func f;
+    Func f2;
+};
+
+void A_f2() {
+  PRINT(log_in, "A_f2")
+  PRINT(log_still, "A_f2")
+  PRINT(log_out, "A_f2")
+}
+
+void A_f() {
+  PRINT(log_in, "A_f")
+  PRINT(log_still, "A_f")
+  A_f2();
+  PRINT(log_out, "A_f")
+}
+
+struct B {
+    Func f;
+};
+
+void B_f() {
+  PRINT(log_in, "B_f")
+  PRINT(log_still, "B_f")
+  A_f();
+  PRINT(log_out, "B_f")
+}
+
+int main() {
+  PRINT(log_in, "main")
+  
+  B_f();
+
+  char buf[] = ": slc09wsz.us.or";
   // fprintf(stderr, "%d\n", strlen(buf));
   fprintf(stderr, "%s\n", log_hexdump((unsigned char *)buf, strlen(buf)));
+  PRINT(log_out, "main")
 }
 #endif

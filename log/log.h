@@ -5,7 +5,7 @@
 extern "C" {
 #endif
 
-extern int Indent;
+// extern int Indent;
 
 extern char *log_in(char *);
 extern char *log_out(char *);
