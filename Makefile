@@ -2,16 +2,29 @@
 EXES=client libevent-client libevent-server simpclt simpsvr rot13svr h2clt h2svr
 # simpclt simpsvr rot13svr rot13svr2 rot13svr3
 
+UNAME_S := $(shell uname -s)
+ifeq ($(UNAME_S),Linux)
+NGHTTP2=/opt/nghttp2-1.38.0
+LIBEVENT=/usr/local/lib
+OPENSSL=/usr/lib
+endif
+ifeq ($(UNAME_S),Darwin)
+NGHTTP2=/Users/xixisun/work/29805546/nghttp2
+LIBEVENT=/usr/local/Cellar/libevent/2.1.10
+OPENSSL=/usr/local/Cellar/openssl/1.0.2s
+endif
+
 CC=cc
-CFLAG=-g -c -DHAVE_FCNTL_H -DHAVE_NETDB_H -DHAVE_UNISTD_H
+CFLAG=\
+	-g -c -DHAVE_FCNTL_H -DHAVE_NETDB_H -DHAVE_UNISTD_H \
+	-I$(NGHTTP2)/include
 LDFLAG=\
-   -L/Users/xixisun/work/29805546/nghttp2/lib -lnghttp2 \
-   -L/usr/local/Cellar/libevent/2.1.10/lib -levent \
+   -L$(NGHTTP2)/lib -lnghttp2 \
    -ldl -pthread
 LDFLAG2=\
-   -L/Users/xixisun/work/29805546/nghttp2/lib -lnghttp2 \
-   -L/usr/local/Cellar/libevent/2.1.10/lib -levent_openssl -levent \
-   -L/usr/local/Cellar/openssl/1.0.2s/lib -lssl -lcrypto -ldl -pthread
+   -L$(NGHTTP2)/lib -lnghttp2 \
+   -L$(LIBEVENT)/lib -levent_openssl -levent \
+   -L$(OPENSSL)/lib -lssl -lcrypto -ldl -pthread
 
 all:	$(EXES)
 

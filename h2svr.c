@@ -507,6 +507,7 @@ int main(int argc, char const *argv[]) {
     htp_msg_completecb   // http_cb      on_message_complete;
   };
   http2_session_data h2session;
+  memset(&h2session, 0, sizeof(http2_session_data));
   http_parser parser;
   parser.data = &h2session;
   http_parser_init(&parser, HTTP_REQUEST);
