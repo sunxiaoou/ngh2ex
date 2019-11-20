@@ -64,7 +64,7 @@ char *log_hexdump(unsigned char *data, int len) {
 
   // fprintf(stderr, "len(%d)\n", len);
   APPEND2("len(%d)\n", len)
-  for(i = 0; i < len;){
+  for(i = 0; i < len && strlen(str) < sizeof(str);){
     // fprintf(stderr, "%03x | ", i / 16);
     APPEND2("%03x | ", i / 16);
     maxlen = (len - i > 16) ? 16 : len - i;
