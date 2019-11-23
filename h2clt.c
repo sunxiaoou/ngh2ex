@@ -5,10 +5,10 @@
 #include <unistd.h>
 #include <string.h>
 
+#include <apr-1/apr_base64.h>
 #include <nghttp2/nghttp2.h>
 
 #include "http-parser/http_parser.h"
-#include "b64/cencode.h"
 #include "log/log.h"
 
 
@@ -63,18 +63,10 @@ static void make_upgrade_request(char *buf, unsigned char *settings, int slen, c
   PRINT(log_in, "make_upgrade_request")
 
   char b64[128];
-  char *c = b64;
-  int cnt = 0;
-  base64_encodestate s;
+  int cnt = apr_base64_encode(b64, (char *)settings, slen);
+  b64[cnt] = 0;
 
-  base64_init_encodestate(&s);
-  cnt = base64_encode_block((char *)settings, slen, c, &s);
-  c += cnt;
-  cnt = base64_encode_blockend(c, &s);
-  // c += cnt;
-  *c = 0;
-
-  c = buf;
+  char *c = buf;
   cnt = sprintf(c, "%s %s HTTP/1.1\r\n", "GET", path);
   c += cnt;
   cnt = sprintf(c, "host: %s:%d\r\n", host, port);
@@ -440,12 +432,12 @@ static int session_receive(http2_session_data *psession, int sock) {
 
 int main(int argc, char *argv[])
 {
-  PRINT(log_in, "main")
-
   if (argc < 2) {
     fprintf(stderr, "Usage: %s uri\n", argv[0]);
     return 1;
   }
+
+  PRINT(log_in, "main")
 
   int rc;
   struct http_parser_url u;
