@@ -422,7 +422,9 @@ static int session_send(http2_session_data *psession, int sock) {
   int len;
 
   while(1) {
+    PRINT(log_in, "nghttp2_session_mem_send")
     len = nghttp2_session_mem_send(psession->session, &sndbuf);
+    PRINT(log_out, "nghttp2_session_mem_send")
     if (len == 0)
       break;
     if (len < 0) {
