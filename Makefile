@@ -19,7 +19,8 @@ endif
 CC=cc
 CFLAG=\
 	-g -c -DHAVE_FCNTL_H -DHAVE_NETDB_H -DHAVE_UNISTD_H \
-	-I$(NGHTTP2)/include
+	-I$(NGHTTP2)/include \
+	-I$(APACHE)/include
 LDFLAG=\
     -L$(NGHTTP2)/lib -lnghttp2 \
     -L$(APACHE)/lib -laprutil-1 \

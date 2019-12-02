@@ -5,7 +5,7 @@
 #include <unistd.h>
 #include <string.h>
 
-#include <apr-1/apr_base64.h>
+#include <apr_base64.h>
 #include <nghttp2/nghttp2.h>
 
 #include "http-parser/http_parser.h"
