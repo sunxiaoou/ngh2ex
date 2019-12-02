@@ -291,7 +291,8 @@ static int on_frame_recv_callback(nghttp2_session *session, const nghttp2_frame 
     break;
   case NGHTTP2_SETTINGS:
     fprintf(stderr, "(niv=%u)\n", (int)frame->settings.niv);
-    for (int i = 0; i < frame->settings.niv; ++ i) {
+    int i;
+    for (i = 0; i < frame->settings.niv; ++ i) {
       fprintf(stderr, "[%s(0x%02x):%u]\n", strsettingsid(frame->settings.iv[i].settings_id),
           frame->settings.iv[i].settings_id, frame->settings.iv[i].value);
     }
