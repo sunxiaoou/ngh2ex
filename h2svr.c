@@ -1,4 +1,4 @@
-// Server side C/C++ program to demonstrate Socket programming
+// A sample of a nghttp2 server without security
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -22,16 +22,16 @@
 
 typedef struct http2_stream_data {
   struct http2_stream_data *prev, *next;
-  char *request_path;
+  char *uri;
   int32_t stream_id;
   int fd;
 } http2_stream_data;
 
 typedef struct http2_session_data {
+  char *client_addr;
+  char uri[256];
   http2_stream_data root;
   nghttp2_session *session;
-  char *client_addr;
-  int updated;
 } http2_session_data;
 
 #define BUFSIZE 1024
@@ -115,21 +115,23 @@ static int htp_uricb(http_parser *htp, const char *data, size_t len) {
   PRINT(log_in, "htp_uricb")
   fprintf(stderr, "method(%d)\n", htp->method);
   fprintf(stderr, "uri(%.*s)\n", (int)len, data);
+  http2_session_data *p = htp->data;
+  strncpy(p->uri, data, len);  
   PRINT(log_out, "htp_uricb")
   return 0;
 }
 
 static int htp_hdr_keycb(http_parser *htp, const char *data, size_t len) {
-  PRINT(log_in, "htp_hdr_keycb")
+  // PRINT(log_in, "htp_hdr_keycb")
   fprintf(stderr, "hdr_key(%.*s)\n", (int)len, data);
-  PRINT(log_out, "htp_hdr_keycb")
+  // PRINT(log_out, "htp_hdr_keycb")
   return 0;
 }
 
 static int htp_hdr_valcb(http_parser *htp, const char *data, size_t len) {
-  PRINT(log_in, "htp_hdr_valcb")
+  // PRINT(log_in, "htp_hdr_valcb")
   fprintf(stderr, "hdr_val(%.*s)\n", (int)len, data);
-  PRINT(log_out, "htp_hdr_valcb")
+  // PRINT(log_out, "htp_hdr_valcb")
   return 0;
 }
 
@@ -224,7 +226,7 @@ static void delete_http2_stream_data(http2_stream_data *stream_data) {
   if (stream_data->fd != -1) {
     close(stream_data->fd);
   }
-  free(stream_data->request_path);
+  // free(stream_data->request_path);
   free(stream_data);
 
   PRINT(log_out, "delete_http2_stream_data")
@@ -355,7 +357,7 @@ static int on_request_recv(nghttp2_session *session,
   nghttp2_nv hdrs[] = {MAKE_NV(":status", "200")};
   char *rel_path;
 
-  if (!stream_data->request_path) {
+  if (! stream_data->uri) {
     if (error_reply(session, stream_data) != 0) {
       PRINT(log_out, "on_request_recv1")
       return NGHTTP2_ERR_CALLBACK_FAILURE;
@@ -365,8 +367,8 @@ static int on_request_recv(nghttp2_session *session,
     return 0;
   }
   // fprintf(stderr, "%s GET %s\n", session_data->client_addr, stream_data->request_path);
-  fprintf(stderr, "GET %s\n", stream_data->request_path);
-  if (!check_path(stream_data->request_path)) {
+  fprintf(stderr, "GET %s\n", stream_data->uri);
+  if (! check_path(stream_data->uri)) {
     if (error_reply(session, stream_data) != 0) {
       PRINT(log_out, "on_request_recv3")
       return NGHTTP2_ERR_CALLBACK_FAILURE;
@@ -375,7 +377,7 @@ static int on_request_recv(nghttp2_session *session,
     PRINT(log_out, "on_request_recv4")
     return 0;
   }
-  for (rel_path = stream_data->request_path; *rel_path == '/'; ++rel_path)
+  for (rel_path = stream_data->uri; *rel_path == '/'; ++rel_path)
     ;
   fd = open(rel_path, O_RDONLY);
   if (fd == -1) {
@@ -540,7 +542,7 @@ static int do_write(int sock, struct fd_state *state) {
     }
 
     http2_stream_data *stream_data = create_http2_stream_data(&state->h2session, 1);
-    stream_data->request_path = "/";
+    stream_data->uri = state->h2session.uri;
     rc = on_request_recv(state->h2session.session, &state->h2session, stream_data);
     if (rc < 0) {
       PRINT(log_out, "do_write3")
