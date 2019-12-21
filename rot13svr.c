@@ -18,57 +18,24 @@
 
 #define MAX_LINE 16384
 
-static void log_data(unsigned char *data, int len)
-{
-  unsigned char c;
-  char tmbuf[40];
-  int i, j, maxlen;
-
-  for(i = 0; i < len;){
-    fprintf(stderr, "%03x | ", i / 16);
-    maxlen = (len - i > 16) ? 16 : len - i;
-    for(j = 0; j < maxlen; j ++){
-      if(j && j % 4 == 0)
-        fprintf(stderr, " ");
-      fprintf(stderr, "%02X", *((unsigned char *)data + i + j));
-    }
-
-    for(; j < 16; j ++){
-      if(j && j % 4 == 0)
-        fprintf(stderr, " ");
-      fprintf(stderr, "  ");
-    }
-
-    fprintf(stderr, " | ");
-    for(j = 0; j < maxlen; j ++) {
-      c = *((unsigned char *)data + i + j);
-      if(c >= ' ' && c < 127 )
-        fprintf(stderr, "%c", c);
-      else
-        fprintf(stderr, ".");
-    }
-    for(; j < 16; j ++)
-      fprintf(stderr, " ");
-
-    i += maxlen;
-    if(i < len)
-      fprintf(stderr, "\n");
-  }
-
-  fprintf(stderr, "\n");
-}
 
 char
-rot13_char(char c)
-{
+rot13_char(char c) {
+    PRINT(log_in, "rot13_char")
     /* We don't want to use isalpha here; setting the locale would change
      * which characters are considered alphabetical. */
-    if ((c >= 'a' && c <= 'm') || (c >= 'A' && c <= 'M'))
+    if ((c >= 'a' && c <= 'm') || (c >= 'A' && c <= 'M')) {
+        PRINT(log_out, "rot13_char")
         return c + 13;
-    else if ((c >= 'n' && c <= 'z') || (c >= 'N' && c <= 'Z'))
+    }
+    else if ((c >= 'n' && c <= 'z') || (c >= 'N' && c <= 'Z')) {
+        PRINT(log_out, "rot13_char2")
         return c - 13;
-    else
+    }
+    else {
+        PRINT(log_out, "rot13_char3")
         return c;
+    }
 }
 
 struct fd_state {
@@ -81,6 +48,7 @@ struct fd_state {
 struct fd_state *
 alloc_fd_state(void)
 {
+    PRINT(log_still, "alloc_fd_state")
     struct fd_state *state = malloc(sizeof(struct fd_state));
     if (!state)
         return NULL;
@@ -91,12 +59,14 @@ alloc_fd_state(void)
 void
 free_fd_state(struct fd_state *state)
 {
+    PRINT(log_still, "free_fd_state")
     free(state);
 }
 
 void
 make_nonblocking(int fd)
 {
+    PRINT(log_still, "make_nonblocking")
     fcntl(fd, F_SETFL, O_NONBLOCK);
 }
 
@@ -141,7 +111,7 @@ do_read(int fd, struct fd_state *state)
         state->buffer_used += result;
     }
 
-    log_data((unsigned char *)state->buffer, state->buffer_used);
+    HEXDUMP(state->buffer, state->buffer_used)
     for (i=0; i < state->buffer_used; ++ i)  {
         state->buffer[i] = rot13_char(state->buffer[i]);
     }
@@ -174,7 +144,7 @@ do_write(int fd, struct fd_state *state)
         n_written += result;
     }
 
-    log_data((unsigned char *)state->buffer, n_written);
+    HEXDUMP(state->buffer, n_written);
 
     if (n_written == state->buffer_used)
         state->buffer_used = 0;
@@ -224,10 +194,6 @@ run(void)
         PRINT(log_out, "run2")
         return;
     }
-
-    FD_ZERO(&readset);
-    FD_ZERO(&writeset);
-    FD_ZERO(&exset);
 
     while (1) {
         maxfd = listener;

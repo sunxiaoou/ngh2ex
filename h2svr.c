@@ -31,17 +31,28 @@ typedef struct http2_session_data {
   http2_stream_data root;
   nghttp2_session *session;
   char *client_addr;
+  int updated;
 } http2_session_data;
 
-static int listen_to(int port, int nlisten) {
-  PRINT(log_in, "listen_to")
+#define BUFSIZE 1024
+typedef struct fd_state {
+    char buffer[BUFSIZE];
+    int buflen;
+    int writing;
+    http2_session_data h2session;
+} fd_state;
+
+static int listen_(int port, int nlisten) {
+  PRINT(log_in, "listen_")
 
   int sock = socket(AF_INET, SOCK_STREAM, 0);
   if (socket < 0) {
     perror("socket failed");
-    PRINT(log_out, "listen_to")
+    PRINT(log_out, "listen_")
     return -1;
   }
+
+  // fcntl(sock, F_SETFL, O_NONBLOCK);
 
   struct sockaddr_in sin;
   memset(&sin, 0, sizeof(struct sockaddr_in));
@@ -53,7 +64,7 @@ static int listen_to(int port, int nlisten) {
   if (rc < 0) {
     perror("bind failed");
     close(sock);
-    PRINT(log_out, "listen_to2")
+    PRINT(log_out, "listen_2")
     return -1;
   }
 
@@ -61,28 +72,43 @@ static int listen_to(int port, int nlisten) {
   if (rc < 0) {
     perror("listen failed");
     close(sock);
-    PRINT(log_out, "listen_to3")
+    PRINT(log_out, "listen_3")
     return -1;
   }
 
-  PRINT(log_out, "listen_to4")
+  PRINT(log_out, "listen_4")
   return sock;
 }
 
-static int accept_to(int listener) {
-  PRINT(log_in, "accept_to")
+static int accept_(int listener) {
+  PRINT(log_in, "accept_")
 
   struct sockaddr_in sin;
   unsigned long len = sizeof(struct sockaddr_in);
   int sock = accept(listener, (struct sockaddr *)(&sin), (socklen_t *)&len);
   if (sock < 0) {
     perror("accept");
-    PRINT(log_out, "accept_to")
+    PRINT(log_out, "accept_")
     return -1;
   }
 
-  PRINT(log_out, "accept_to2")
+  PRINT(log_out, "accept_2")
   return sock;
+}
+
+fd_state *alloc_fd_state(void) {
+  PRINT(log_still, "alloc_fd_state")
+  fd_state *state = malloc(sizeof(fd_state));
+  if (! state)
+    return NULL;
+
+  memset(state, 0, sizeof(fd_state));
+  return state;
+}
+
+void free_fd_state(fd_state *state) {
+  PRINT(log_still, "free_fd_state")
+  free(state);
 }
 
 static int htp_uricb(http_parser *htp, const char *data, size_t len) {
@@ -118,6 +144,36 @@ static int htp_msg_completecb(http_parser *htp) {
   PRINT(log_in, "htp_msg_completecb")
   http_parser_pause(htp, 1);
   PRINT(log_out, "htp_msg_completecb")
+  return 0;
+}
+
+static int parse_htp(http2_session_data *session_data, char *buffer, int buflen) {
+  PRINT(log_in, "parse_htp")
+
+  http_parser_settings parser_settings = {
+    NULL,                // http_cb      on_message_begin;
+    htp_uricb,           // http_data_cb on_url;
+    NULL,                // http_data_cb on_status;
+    htp_hdr_keycb,       // http_data_cb on_header_field;
+    htp_hdr_valcb,       // http_data_cb on_header_value;
+    htp_hdrs_completecb, // http_cb      on_headers_complete;
+    NULL,                // http_data_cb on_body;
+    htp_msg_completecb   // http_cb      on_message_complete;
+  };
+
+  http_parser parser;
+  parser.data = session_data;
+  http_parser_init(&parser, HTTP_REQUEST);
+  http_parser_execute(&parser, &parser_settings, buffer, buflen);
+
+  int htperr = parser.http_errno;
+  if (htperr != HPE_PAUSED) {
+    fprintf(stderr, "Failed to parse HTTP Upgrade request header %s\n:", http_errno_name(htperr));
+    PRINT(log_out, "parse_htp")
+    return -1;
+  }
+
+  PRINT(log_out, "parse_htp2")
   return 0;
 }
 
@@ -370,8 +426,8 @@ static int on_stream_close_callback(nghttp2_session *session, int32_t stream_id,
   return 0;
 }
 
-static int initialize_nghttp2_session(http2_session_data *session_data) {
-  PRINT(log_in, "initialize_nghttp2_session")
+static int initialize_h2session(http2_session_data *session_data) {
+  PRINT(log_in, "initialize_h2session")
 
   nghttp2_session_callbacks *callbacks;
 
@@ -391,7 +447,7 @@ static int initialize_nghttp2_session(http2_session_data *session_data) {
   int rc = nghttp2_submit_settings(session_data->session, NGHTTP2_FLAG_NONE, iv, ARRLEN(iv));
   if (rc != 0) {
     fprintf(stderr, "nghttp2_submit_settings returned error(%s)\n", nghttp2_strerror(rc));
-    PRINT(log_out, "initialize_nghttp2_session")
+    PRINT(log_out, "initialize_h2session")
     return -1;
   }
 
@@ -399,7 +455,7 @@ static int initialize_nghttp2_session(http2_session_data *session_data) {
   int len = nghttp2_pack_settings_payload(settings, sizeof(settings), iv, ARRLEN(iv));
   if (len <= 0) {
     fprintf(stderr, "Could not pack SETTINGS: %s\n", nghttp2_strerror(len));
-    PRINT(log_out, "initialize_nghttp2_session2")
+    PRINT(log_out, "initialize_h2session2")
     return -1;
   }
 
@@ -407,69 +463,119 @@ static int initialize_nghttp2_session(http2_session_data *session_data) {
   rc = nghttp2_session_upgrade2(session_data->session, settings, len, 0, NULL);
   if (rc != 0) {
     fprintf(stderr, "nghttp2_session_upgrade returned error(%s)\n", nghttp2_strerror(rc));
-    PRINT(log_out, "initialize_nghttp2_session3")
+    PRINT(log_out, "initialize_h2session3")
     return -1;
   }
 
-  PRINT(log_out, "initialize_nghttp2_session4")
+  PRINT(log_out, "initialize_h2session4")
   return 0;
 }
 
-static int session_send(http2_session_data *psession, int sock) {
-  PRINT(log_in, "session_send")
+static int do_read(int sock, struct fd_state *state) {
+  PRINT(log_in, "do_read")
 
-  const uint8_t *sndbuf;
-  int len;
+  state->buflen = read(sock, state->buffer, sizeof(state->buffer));
+  if (state->buflen < 0) {
+    perror("read failed");
+    close(sock);
+    PRINT(log_out, "do_read")
+    return -1;
+  } else if (state->buflen == 0) {
+    close(sock);
+    PRINT(log_out, "do_read2")
+    return -1;
+  }
+  HEXDUMP(state->buffer, state->buflen)
 
-  while(1) {
-    PRINT(log_in, "nghttp2_session_mem_send")
-    len = nghttp2_session_mem_send(psession->session, &sndbuf);
-    PRINT(log_out, "nghttp2_session_mem_send")
-    if (len == 0)
-      break;
-    if (len < 0) {
-      fprintf(stderr, "nghttp2_session_mem_send returns error(%s)\n", nghttp2_strerror(len));
-      PRINT(log_out, "session_send")
+  int rc;
+  if (state->h2session.session == NULL) {
+    rc = parse_htp(&state->h2session, state->buffer, state->buflen);
+    if (rc < 0){
+      PRINT(log_out, "do_read3")
       return -1;
     }
-    HEXDUMP(sndbuf, len);
-    len = write(sock, sndbuf, len);
-    fprintf(stderr, "written(%d)\n", len);
+  } else {
+    PRINT(log_in, "nghttp2_session_mem_recv")
+    rc = nghttp2_session_mem_recv(state->h2session.session,
+            (uint8_t *)state->buffer, state->buflen);
+    PRINT(log_out, "nghttp2_session_mem_recv")
+    if (rc < 0) {
+      fprintf(stderr, "Recevied negative error(%s)\n", nghttp2_strerror(rc));
+      PRINT(log_out, "do_read4")
+      return -1;
+    }
   }
 
-  if (nghttp2_session_want_read(psession->session) == 0 &&
-      nghttp2_session_want_write(psession->session) == 0) {
-    PRINT(log_out, "session_send2")
-    return -1;
-  }
+  state->writing = 1;
 
-  PRINT(log_out, "session_send3")
+  PRINT(log_out, "do_read5")
   return 0;
 }
 
-static int session_receive(http2_session_data *psession, int sock) {
-  PRINT(log_in, "session_receive")
+static int do_write(int sock, struct fd_state *state) {
+  PRINT(log_in, "do_write")
 
-  unsigned char rcvbuf[1024];
+  int rc;
+  const unsigned char *sndbuf;
 
-  int len = read(sock, rcvbuf, sizeof(rcvbuf));
-  if (len == 0) {
-    fprintf(stderr, "Recevied no message\n");
-    PRINT(log_out, "session_receive")
-    return -1;
+  if (state->h2session.session == NULL) {
+    strcpy(state->buffer,
+            "HTTP/1.1 101 Switching Protocols\r\n"
+            "Connection: Upgrade\r\n"
+            "Upgrade: " NGHTTP2_CLEARTEXT_PROTO_VERSION_ID "\r\n"
+            "\r\n");
+    state->buflen = strlen(state->buffer);
+    HEXDUMP(state->buffer, state->buflen);
+    rc = write(sock, state->buffer, state->buflen);
+    if (rc < 0) {
+      perror("write failed");
+      PRINT(log_out, "do_write")
+      return -1;
+    }
+
+    rc = initialize_h2session(&state->h2session);
+    if (rc < 0) {
+      PRINT(log_out, "do_write2")
+      return -1;
+    }
+
+    http2_stream_data *stream_data = create_http2_stream_data(&state->h2session, 1);
+    stream_data->request_path = "/";
+    rc = on_request_recv(state->h2session.session, &state->h2session, stream_data);
+    if (rc < 0) {
+      PRINT(log_out, "do_write3")
+      return -1;
+    }
+  } else {
+    while(1) {
+      PRINT(log_in, "nghttp2_session_mem_send")
+      rc = nghttp2_session_mem_send(state->h2session.session, &sndbuf);
+      PRINT(log_out, "nghttp2_session_mem_send")
+      if (rc == 0)
+        break;
+      if (rc < 0) {
+        fprintf(stderr, "nghttp2_session_mem_send returns error(%s)\n", nghttp2_strerror(rc));
+        PRINT(log_out, "do_write4")
+        return -1;
+      }
+      HEXDUMP(sndbuf, rc);
+      rc = write(sock, sndbuf, rc);
+      if (rc < 0) {
+        perror("write failed");
+        PRINT(log_out, "do_write5")
+        return -1;
+      }
+    }
+
+    if (nghttp2_session_want_read(state->h2session.session) == 0 &&
+        nghttp2_session_want_write(state->h2session.session) == 0) {
+      PRINT(log_out, "do_write6")
+      return -1;
+    }
   }
-  HEXDUMP(rcvbuf, len);
 
-  PRINT(log_in, "nghttp2_session_mem_recv")
-  len = nghttp2_session_mem_recv(psession->session, (uint8_t *)rcvbuf, len);
-  PRINT(log_out, "nghttp2_session_mem_recv")
-  if (len < 0) {
-    fprintf(stderr, "Recevied negative error(%s)\n", nghttp2_strerror(len));
-    PRINT(log_out, "session_receive2")
-    return -1;
-  }
-
-  PRINT(log_out, "session_receive3")
+  state->writing = 0;
+  PRINT(log_out, "do_write7")
   return 0;
 }
 
@@ -481,77 +587,68 @@ int main(int argc, char const *argv[]) {
 
   PRINT(log_in, "main")
 
-  int listener = listen_to(atoi(argv[1]), 3);
+  int listener = listen_(atoi(argv[1]), 3);
   if (listener < 0) {
     PRINT(log_out, "main")
     return -1;
   }
 
-  int sock = accept_to(listener);
-  if (sock < 0) {
-    PRINT(log_out, "main2")
-    return -1;
-  }
+  int i, maxfd;
+  fd_set readset, writeset;
+  fd_state *state[FD_SETSIZE];
+  memset(state, 0, sizeof(state));
 
-  char buffer[1024] = {0};
-  int len = read(sock, buffer, 1024);
-  HEXDUMP(buffer, len)
-  fprintf(stderr, "read(%d)\n", len);
-
-  http_parser_settings parser_settings = {
-    NULL,                // http_cb      on_message_begin;
-    htp_uricb,           // http_data_cb on_url;
-    NULL,                // http_data_cb on_status;
-    htp_hdr_keycb,       // http_data_cb on_header_field;
-    htp_hdr_valcb,       // http_data_cb on_header_value;
-    htp_hdrs_completecb, // http_cb      on_headers_complete;
-    NULL,                // http_data_cb on_body;
-    htp_msg_completecb   // http_cb      on_message_complete;
-  };
-  http2_session_data h2session;
-  memset(&h2session, 0, sizeof(http2_session_data));
-  http_parser parser;
-  parser.data = &h2session;
-  http_parser_init(&parser, HTTP_REQUEST);
-
-  int rc;
-  rc = http_parser_execute(&parser, &parser_settings, buffer, len);
-  int htperr = parser.http_errno;
-  if (htperr != HPE_PAUSED) {
-    fprintf(stderr, "Failed to parse HTTP Upgrade request header %s\n:", http_errno_name(htperr));
-    return -1;
-  }
-
-  // http2_session_data h2session;
-  initialize_nghttp2_session(&h2session);
-
-  char respones[] = "HTTP/1.1 101 Switching Protocols\r\n"
-                    "Connection: Upgrade\r\n"
-                    "Upgrade: " NGHTTP2_CLEARTEXT_PROTO_VERSION_ID "\r\n"
-                    "\r\n";
-  HEXDUMP(respones, strlen(respones))
-  len = write(sock, respones, sizeof(respones));
-  fprintf(stderr, "written(%d)\n", len);
-
-  http2_stream_data *stream_data = create_http2_stream_data(&h2session, 1);
-  stream_data->request_path = "/";
-  on_request_recv(h2session.session, &h2session, stream_data);
-
-  int maxfd = sock + 1;
-  fd_set rset;
-  FD_ZERO(&rset);
   while (1) {
-    FD_SET(sock, &rset);
-    select(maxfd, &rset, NULL, NULL, NULL);
-    if (FD_ISSET(sock, &rset)) {
-      if (session_receive(&h2session, sock) < 0)
-        break;
-      if (session_send(&h2session, sock) < 0)
-        break;
+    FD_ZERO(&readset);
+    FD_ZERO(&writeset);
+    FD_SET(listener, &readset);
+    maxfd = listener;
+
+    for (i = 0; i < FD_SETSIZE; i ++) {
+      if (state[i]) {
+        if (i > maxfd)
+          maxfd = i;
+        FD_SET(i, &readset);
+        if (state[i]->writing) {
+          FD_SET(i, &writeset);
+        }
+      }
+    }
+
+    if (select(maxfd + 1, &readset, &writeset, NULL, NULL) < 0) {
+      perror("select");
+      PRINT(log_out, "main2")
+      return -1;
+    }
+
+    if (FD_ISSET(listener, &readset)) {
+      int sock = accept_(listener);
+      if (sock > FD_SETSIZE) {
+        close(sock);
+      } else if (sock > 0) {
+        // make_nonblocking(sock);
+        state[sock] = alloc_fd_state();
+      }
+    }
+
+    for (i = 0; i < maxfd + 1; i ++) {
+      int r = 0;
+      if (i == listener)
+        continue;
+
+      if (FD_ISSET(i, &readset)) {
+        r = do_read(i, state[i]);
+      }
+      if (r == 0 && FD_ISSET(i, &writeset)) {
+        r = do_write(i, state[i]);
+      }
+      if (r) {    /* recv shutdown or recv / send error */
+        free_fd_state(state[i]);
+        state[i] = NULL;
+        close(i);
+      }
     }
   }
-
-  close(sock);
 
   PRINT(log_out, "main3")
   return 0;
