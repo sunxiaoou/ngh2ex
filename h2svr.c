@@ -34,10 +34,7 @@ typedef struct http2_session_data {
   nghttp2_session *session;
 } http2_session_data;
 
-#define BUFSIZE 1024
 typedef struct fd_state {
-    char buffer[BUFSIZE];
-    int buflen;
     int writing;
     http2_session_data h2session;
 } fd_state;
@@ -473,33 +470,36 @@ static int initialize_h2session(http2_session_data *session_data) {
   return 0;
 }
 
+#define BUFSIZE 1024
 static int do_read(int sock, struct fd_state *state) {
   PRINT(log_in, "do_read")
 
-  state->buflen = read(sock, state->buffer, sizeof(state->buffer));
-  if (state->buflen < 0) {
+  char buf[BUFSIZE];
+  int len;
+
+  len = read(sock, buf, sizeof(buf));
+  if (len < 0) {
     perror("read failed");
     close(sock);
     PRINT(log_out, "do_read")
     return -1;
-  } else if (state->buflen == 0) {
+  } else if (len == 0) {
     close(sock);
     PRINT(log_out, "do_read2")
     return -1;
   }
-  HEXDUMP(state->buffer, state->buflen)
+  HEXDUMP(buf, len)
 
   int rc;
   if (state->h2session.session == NULL) {
-    rc = parse_htp(&state->h2session, state->buffer, state->buflen);
-    if (rc < 0){
+    rc = parse_htp(&state->h2session, buf, len);
+    if (rc < 0) {
       PRINT(log_out, "do_read3")
       return -1;
     }
   } else {
     PRINT(log_in, "nghttp2_session_mem_recv")
-    rc = nghttp2_session_mem_recv(state->h2session.session,
-            (uint8_t *)state->buffer, state->buflen);
+    rc = nghttp2_session_mem_recv(state->h2session.session, (unsigned char *)buf, len);
     PRINT(log_out, "nghttp2_session_mem_recv")
     if (rc < 0) {
       fprintf(stderr, "Recevied negative error(%s)\n", nghttp2_strerror(rc));
@@ -514,21 +514,24 @@ static int do_read(int sock, struct fd_state *state) {
   return 0;
 }
 
+
+static const char SWITCHING[] =
+        "HTTP/1.1 101 Switching Protocols\r\n"
+        "Connection: Upgrade\r\n"
+        "Upgrade: " NGHTTP2_CLEARTEXT_PROTO_VERSION_ID "\r\n"
+        "\r\n";
+
 static int do_write(int sock, struct fd_state *state) {
   PRINT(log_in, "do_write")
 
   int rc;
+  int len;
   const unsigned char *sndbuf;
 
   if (state->h2session.session == NULL) {
-    strcpy(state->buffer,
-            "HTTP/1.1 101 Switching Protocols\r\n"
-            "Connection: Upgrade\r\n"
-            "Upgrade: " NGHTTP2_CLEARTEXT_PROTO_VERSION_ID "\r\n"
-            "\r\n");
-    state->buflen = strlen(state->buffer);
-    HEXDUMP(state->buffer, state->buflen);
-    rc = write(sock, state->buffer, state->buflen);
+    len = strlen(SWITCHING);
+    HEXDUMP(SWITCHING, len);
+    rc = write(sock, SWITCHING, len);
     if (rc < 0) {
       perror("write failed");
       PRINT(log_out, "do_write")
