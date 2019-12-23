@@ -467,8 +467,8 @@ int main(int argc, char *argv[])
   }
 
   nghttp2_settings_entry iv[] = {
-    {NGHTTP2_SETTINGS_MAX_CONCURRENT_STREAMS, 100},
-    {NGHTTP2_SETTINGS_ENABLE_PUSH, 0}
+    {NGHTTP2_SETTINGS_MAX_CONCURRENT_STREAMS, 100}
+    // {NGHTTP2_SETTINGS_ENABLE_PUSH, 0}
   };
   unsigned char settings[128];
   int len = nghttp2_pack_settings_payload(settings, sizeof(settings), iv, sizeof(iv) / sizeof(*iv));

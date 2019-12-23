@@ -23,13 +23,16 @@
 typedef struct http2_stream_data {
   struct http2_stream_data *prev, *next;
   char *uri;
-  int32_t stream_id;
+  char *authority;
+  int32_t id;
   int fd;
 } http2_stream_data;
 
 typedef struct http2_session_data {
-  char *client_addr;
+  // char *client_addr;
+  const char *push_path;
   char uri[256];
+  char authority[128];
   http2_stream_data root;
   nghttp2_session *session;
 } http2_session_data;
@@ -113,22 +116,26 @@ static int htp_uricb(http_parser *htp, const char *data, size_t len) {
   fprintf(stderr, "method(%d)\n", htp->method);
   fprintf(stderr, "uri(%.*s)\n", (int)len, data);
   http2_session_data *p = htp->data;
-  strncpy(p->uri, data, len);  
+  strncpy(p->uri, data, len);
   PRINT(log_out, "htp_uricb")
   return 0;
 }
 
 static int htp_hdr_keycb(http_parser *htp, const char *data, size_t len) {
-  // PRINT(log_in, "htp_hdr_keycb")
   fprintf(stderr, "hdr_key(%.*s)\n", (int)len, data);
-  // PRINT(log_out, "htp_hdr_keycb")
+  if (! strncmp(data, "host", len)) {
+    http2_session_data *p = htp->data;
+    strncpy(p->authority, data, len);
+  }
   return 0;
 }
 
 static int htp_hdr_valcb(http_parser *htp, const char *data, size_t len) {
-  // PRINT(log_in, "htp_hdr_valcb")
   fprintf(stderr, "hdr_val(%.*s)\n", (int)len, data);
-  // PRINT(log_out, "htp_hdr_valcb")
+  http2_session_data *p = htp->data;
+  if (! strncmp(p->authority, "host", len)) {
+    strncpy(p->authority, data, len);
+  }
   return 0;
 }
 
@@ -208,7 +215,7 @@ static http2_stream_data *create_http2_stream_data(http2_session_data *session_d
   http2_stream_data *stream_data;
   stream_data = malloc(sizeof(http2_stream_data));
   memset(stream_data, 0, sizeof(http2_stream_data));
-  stream_data->stream_id = stream_id;
+  stream_data->id = stream_id;
   stream_data->fd = -1;
 
   add_stream(session_data, stream_data);
@@ -227,6 +234,28 @@ static void delete_http2_stream_data(http2_stream_data *stream_data) {
   free(stream_data);
 
   PRINT(log_out, "delete_http2_stream_data")
+}
+
+static int submit_push_promise(nghttp2_session *session, http2_stream_data *stream_data,
+        const char *push_path) {
+  PRINT(log_in, "submit_push_promise")
+
+  nghttp2_nv hdrs[] = {
+    MAKE_NV(":method", "GET"),
+    MAKE_NV(":path", push_path),
+    MAKE_NV(":scheme", "http"),
+    MAKE_NV(":authority", stream_data->authority)
+  };
+  
+  int id = nghttp2_submit_push_promise(session, NGHTTP2_FLAG_END_HEADERS,
+          stream_data->id, hdrs, ARRLEN(hdrs), NULL);
+  if (id < 0) {
+    PRINT(log_out, "submit_push_promise")
+    return -1;
+  }
+
+  PRINT(log_out, "submit_push_promise2")
+  return id;
 }
 
 static ssize_t file_read_callback(nghttp2_session *session, int32_t stream_id,
@@ -255,9 +284,9 @@ static ssize_t file_read_callback(nghttp2_session *session, int32_t stream_id,
   return r;
 }
 
-static int send_response(nghttp2_session *session, int32_t stream_id,
-                         nghttp2_nv *nva, size_t nvlen, int fd) {
-  PRINT(log_in, "send_response")
+static int submit_response(nghttp2_session *session, int32_t stream_id,
+        nghttp2_nv *nva, size_t nvlen, int fd) {
+  PRINT(log_in, "submit_response")
 
   int rv;
   nghttp2_data_provider data_prd;
@@ -268,11 +297,11 @@ static int send_response(nghttp2_session *session, int32_t stream_id,
   rv = nghttp2_submit_response(session, stream_id, nva, nvlen, &data_prd);
   if (rv != 0) {
     fprintf(stderr, "Fatal error(%s)\n", nghttp2_strerror(rv));
-    PRINT(log_out, "send_response")
+    PRINT(log_out, "submit_response")
     return -1;
   }
 
-  PRINT(log_out, "send_response2")
+  PRINT(log_out, "submit_response2")
   return 0;
 }
 
@@ -292,7 +321,7 @@ static int error_reply(nghttp2_session *session,
   if (rv != 0) {
     perror("pipe failed");
     rv = nghttp2_submit_rst_stream(session, NGHTTP2_FLAG_NONE,
-                                   stream_data->stream_id,
+                                   stream_data->id,
                                    NGHTTP2_INTERNAL_ERROR);
     if (rv != 0) {
       fprintf(stderr, "Fatal error(%s)\n", nghttp2_strerror(rv));
@@ -316,7 +345,7 @@ static int error_reply(nghttp2_session *session,
 
   stream_data->fd = pipefd[0];
 
-  if (send_response(session, stream_data->stream_id, hdrs, ARRLEN(hdrs),
+  if (submit_response(session, stream_data->id, hdrs, ARRLEN(hdrs),
                     pipefd[0]) != 0) {
     close(pipefd[0]);
 
@@ -345,28 +374,39 @@ static int check_path(const char *path) {
          !ends_with(path, "/..") && !ends_with(path, "/.");
 }
 
-static int on_request_recv(nghttp2_session *session,
-                           http2_session_data *session_data,
-                           http2_stream_data *stream_data) {
+static int on_request_recv(http2_session_data *session_data, http2_stream_data *stream_data) {
   PRINT(log_in, "on_request_recv")
 
   int fd;
   nghttp2_nv hdrs[] = {MAKE_NV(":status", "200")};
   char *rel_path;
 
+  int enable_push = nghttp2_session_get_remote_settings(session_data->session, NGHTTP2_SETTINGS_ENABLE_PUSH);
+  fprintf(stderr, "enable_push(%d)\n", enable_push);  
+  if (session_data->push_path) {
+    int id = submit_push_promise(session_data->session, stream_data, session_data->push_path);
+    if (id < 0) {
+      PRINT(log_out, "on_request_recv2")
+      return -1;  
+    }
+
+    http2_stream_data *promise = create_http2_stream_data(session_data, id);
+    promise->authority = session_data->authority;
+  }
+
   if (! stream_data->uri) {
-    if (error_reply(session, stream_data) != 0) {
-      PRINT(log_out, "on_request_recv1")
+    if (error_reply(session_data->session, stream_data) != 0) {
+      PRINT(log_out, "on_request_recv2")
       return NGHTTP2_ERR_CALLBACK_FAILURE;
     }
 
     PRINT(log_out, "on_request_recv2")
     return 0;
   }
-  // fprintf(stderr, "%s GET %s\n", session_data->client_addr, stream_data->request_path);
+
   fprintf(stderr, "GET %s\n", stream_data->uri);
   if (! check_path(stream_data->uri)) {
-    if (error_reply(session, stream_data) != 0) {
+    if (error_reply(session_data->session, stream_data) != 0) {
       PRINT(log_out, "on_request_recv3")
       return NGHTTP2_ERR_CALLBACK_FAILURE;
     }
@@ -378,7 +418,7 @@ static int on_request_recv(nghttp2_session *session,
     ;
   fd = open(rel_path, O_RDONLY);
   if (fd == -1) {
-    if (error_reply(session, stream_data) != 0) {
+    if (error_reply(session_data->session, stream_data) != 0) {
       PRINT(log_out, "on_request_recv5")
       return NGHTTP2_ERR_CALLBACK_FAILURE;
     }
@@ -388,7 +428,7 @@ static int on_request_recv(nghttp2_session *session,
   }
   stream_data->fd = fd;
 
-  if (send_response(session, stream_data->stream_id, hdrs, ARRLEN(hdrs), fd) != 0) {
+  if (submit_response(session_data->session, stream_data->id, hdrs, ARRLEN(hdrs), fd) != 0) {
     close(fd);
     PRINT(log_out, "on_request_recv7")
     return NGHTTP2_ERR_CALLBACK_FAILURE;
@@ -546,7 +586,8 @@ static int do_write(int sock, struct fd_state *state) {
 
     http2_stream_data *stream_data = create_http2_stream_data(&state->h2session, 1);
     stream_data->uri = state->h2session.uri;
-    rc = on_request_recv(state->h2session.session, &state->h2session, stream_data);
+    stream_data->authority = state->h2session.authority;
+    rc = on_request_recv(&state->h2session, stream_data);
     if (rc < 0) {
       PRINT(log_out, "do_write3")
       return -1;
@@ -586,7 +627,7 @@ static int do_write(int sock, struct fd_state *state) {
 
 int main(int argc, char const *argv[]) {
   if (argc < 2) {
-    fprintf(stderr, "Usage: %s port\n", argv[0]);
+    fprintf(stderr, "Usage: %s port [push_path]\n", argv[0]);
     return 1;
   }
 
@@ -633,6 +674,9 @@ int main(int argc, char const *argv[]) {
       } else if (sock > 0) {
         // make_nonblocking(sock);
         state[sock] = alloc_fd_state();
+        if (argc > 2) {
+          state[sock]->h2session.push_path = argv[2];
+        }
       }
     }
 
