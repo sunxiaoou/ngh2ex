@@ -14,7 +14,14 @@
 #include "log/log.h"
 
 #define ARRLEN(x) (sizeof(x) / sizeof(x[0]))
-#define MAKE_NV(NAME, VALUE)                                                   \
+
+#define MAKE_NV(NAME, VALUE, VALUELEN)                                         \
+  {                                                                            \
+    (uint8_t *)NAME, (uint8_t *)VALUE, sizeof(NAME) - 1, VALUELEN,             \
+        NGHTTP2_NV_FLAG_NONE                                                   \
+  }
+
+#define MAKE_NV2(NAME, VALUE)                                                  \
   {                                                                            \
     (uint8_t *)NAME, (uint8_t *)VALUE, sizeof(NAME) - 1, sizeof(VALUE) - 1,    \
         NGHTTP2_NV_FLAG_NONE                                                   \
@@ -241,10 +248,10 @@ static int submit_push_promise(nghttp2_session *session, http2_stream_data *stre
   PRINT(log_in, "submit_push_promise")
 
   nghttp2_nv hdrs[] = {
-    MAKE_NV(":method", "GET"),
-    MAKE_NV(":path", push_path),
-    MAKE_NV(":scheme", "http"),
-    MAKE_NV(":authority", stream_data->authority)
+    MAKE_NV2(":method", "GET"),
+    MAKE_NV(":path", push_path, strlen(push_path)),
+    MAKE_NV2(":scheme", "http"),
+    MAKE_NV(":authority", stream_data->authority, strlen(stream_data->authority))
   };
   
   int id = nghttp2_submit_push_promise(session, NGHTTP2_FLAG_END_HEADERS,
@@ -315,7 +322,7 @@ static int error_reply(nghttp2_session *session,
   int rv;
   ssize_t writelen;
   int pipefd[2];
-  nghttp2_nv hdrs[] = {MAKE_NV(":status", "404")};
+  nghttp2_nv hdrs[] = {MAKE_NV2(":status", "404")};
 
   rv = pipe(pipefd);
   if (rv != 0) {
@@ -378,7 +385,7 @@ static int on_request_recv(http2_session_data *session_data, http2_stream_data *
   PRINT(log_in, "on_request_recv")
 
   int fd;
-  nghttp2_nv hdrs[] = {MAKE_NV(":status", "200")};
+  nghttp2_nv hdrs[] = {MAKE_NV2(":status", "200")};
   char *rel_path;
 
   int enable_push = nghttp2_session_get_remote_settings(session_data->session, NGHTTP2_SETTINGS_ENABLE_PUSH);
