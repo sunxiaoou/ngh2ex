@@ -14,13 +14,11 @@
 #include "log/log.h"
 
 #define ARRLEN(x) (sizeof(x) / sizeof(x[0]))
-
 #define MAKE_NV(NAME, VALUE, VALUELEN)                                         \
   {                                                                            \
     (uint8_t *)NAME, (uint8_t *)VALUE, sizeof(NAME) - 1, VALUELEN,             \
         NGHTTP2_NV_FLAG_NONE                                                   \
   }
-
 #define MAKE_NV2(NAME, VALUE)                                                  \
   {                                                                            \
     (uint8_t *)NAME, (uint8_t *)VALUE, sizeof(NAME) - 1, sizeof(VALUE) - 1,    \
@@ -253,7 +251,7 @@ static int submit_push_promise(nghttp2_session *session, http2_stream_data *stre
     MAKE_NV2(":scheme", "http"),
     MAKE_NV(":authority", stream_data->authority, strlen(stream_data->authority))
   };
-  
+
   int id = nghttp2_submit_push_promise(session, NGHTTP2_FLAG_END_HEADERS,
           stream_data->id, hdrs, ARRLEN(hdrs), NULL);
   if (id < 0) {
@@ -388,37 +386,48 @@ static int on_request_recv(http2_session_data *session_data, http2_stream_data *
   nghttp2_nv hdrs[] = {MAKE_NV2(":status", "200")};
   char *rel_path;
 
-  int enable_push = nghttp2_session_get_remote_settings(session_data->session, NGHTTP2_SETTINGS_ENABLE_PUSH);
-  fprintf(stderr, "enable_push(%d)\n", enable_push);  
   if (session_data->push_path) {
     int id = submit_push_promise(session_data->session, stream_data, session_data->push_path);
     if (id < 0) {
       PRINT(log_out, "on_request_recv2")
-      return -1;  
+      return NGHTTP2_ERR_CALLBACK_FAILURE;
     }
 
     http2_stream_data *promise = create_http2_stream_data(session_data, id);
     promise->authority = session_data->authority;
+
+    fd = open(session_data->push_path, O_RDONLY);
+    if (fd == -1) {
+      PRINT(log_out, "on_request_recv3")
+      return NGHTTP2_ERR_CALLBACK_FAILURE;
+    }
+    promise->fd = fd;
+
+    if (submit_response(session_data->session, id, hdrs, ARRLEN(hdrs), fd) != 0) {
+      close(fd);
+      PRINT(log_out, "on_request_recv4")
+      return NGHTTP2_ERR_CALLBACK_FAILURE;
+    }
   }
 
   if (! stream_data->uri) {
     if (error_reply(session_data->session, stream_data) != 0) {
-      PRINT(log_out, "on_request_recv2")
+      PRINT(log_out, "on_request_recv5")
       return NGHTTP2_ERR_CALLBACK_FAILURE;
     }
 
-    PRINT(log_out, "on_request_recv2")
+    PRINT(log_out, "on_request_recv6")
     return 0;
   }
 
   fprintf(stderr, "GET %s\n", stream_data->uri);
   if (! check_path(stream_data->uri)) {
     if (error_reply(session_data->session, stream_data) != 0) {
-      PRINT(log_out, "on_request_recv3")
+      PRINT(log_out, "on_request_recv7")
       return NGHTTP2_ERR_CALLBACK_FAILURE;
     }
 
-    PRINT(log_out, "on_request_recv4")
+    PRINT(log_out, "on_request_recv8")
     return 0;
   }
   for (rel_path = stream_data->uri; *rel_path == '/'; ++rel_path)
@@ -426,11 +435,11 @@ static int on_request_recv(http2_session_data *session_data, http2_stream_data *
   fd = open(rel_path, O_RDONLY);
   if (fd == -1) {
     if (error_reply(session_data->session, stream_data) != 0) {
-      PRINT(log_out, "on_request_recv5")
+      PRINT(log_out, "on_request_recv9")
       return NGHTTP2_ERR_CALLBACK_FAILURE;
     }
 
-    PRINT(log_out, "on_request_recv6")
+    PRINT(log_out, "on_request_recv10")
     return 0;
   }
   stream_data->fd = fd;
