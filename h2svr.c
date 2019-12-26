@@ -43,7 +43,7 @@ typedef struct http2_session_data {
 } http2_session_data;
 
 typedef struct fd_state {
-    int writing;
+    int writting;
     http2_session_data h2session;
 } fd_state;
 
@@ -270,23 +270,27 @@ static ssize_t file_read_callback(nghttp2_session *session, int32_t stream_id,
                                   void *user_data) {
   PRINT(log_in, "file_read_callback")
 
-  int fd = source->fd;
-  ssize_t r;
   (void)session;
   (void)stream_id;
   (void)user_data;
+  int r;
+  int used = 0;
 
-  while ((r = read(fd, buf, length)) == -1 && errno == EINTR)
-    ;
-  if (r == -1) {
-    return NGHTTP2_ERR_TEMPORAL_CALLBACK_FAILURE;
-  }
-  if (r == 0) {
-    *data_flags |= NGHTTP2_DATA_FLAG_EOF;
+  while (used < length) {
+    r = read(source->fd, buf + used, length - used);
+    if (r < 0) {
+      perror("read failed");
+      break;
+    }
+    if (r == 0) {
+      *data_flags |= NGHTTP2_DATA_FLAG_EOF;
+      break;
+    }
+    used += r;
   }
 
   PRINT(log_out, "file_read_callback")
-  return r;
+  return used;
 }
 
 static int submit_response(nghttp2_session *session, int32_t stream_id,
@@ -384,7 +388,7 @@ static int on_request_recv(http2_session_data *session_data, http2_stream_data *
 
   int fd;
   nghttp2_nv hdrs[] = {MAKE_NV2(":status", "200")};
-  char *rel_path;
+  const char *rel_path;
 
   if (session_data->push_path) {
     int id = submit_push_promise(session_data->session, stream_data, session_data->push_path);
@@ -396,7 +400,9 @@ static int on_request_recv(http2_session_data *session_data, http2_stream_data *
     http2_stream_data *promise = create_http2_stream_data(session_data, id);
     promise->authority = session_data->authority;
 
-    fd = open(session_data->push_path, O_RDONLY);
+    for (rel_path = session_data->push_path; *rel_path == '/'; ++rel_path)
+      ;
+    fd = open(rel_path, O_RDONLY);
     if (fd == -1) {
       PRINT(log_out, "on_request_recv3")
       return NGHTTP2_ERR_CALLBACK_FAILURE;
@@ -564,7 +570,7 @@ static int do_read(int sock, struct fd_state *state) {
     }
   }
 
-  state->writing = 1;
+  state->writting = 1;
 
   PRINT(log_out, "do_read5")
   return 0;
@@ -636,7 +642,7 @@ static int do_write(int sock, struct fd_state *state) {
     }
   }
 
-  state->writing = 0;
+  state->writting = 0;
   PRINT(log_out, "do_write7")
   return 0;
 }
@@ -644,6 +650,11 @@ static int do_write(int sock, struct fd_state *state) {
 int main(int argc, char const *argv[]) {
   if (argc < 2) {
     fprintf(stderr, "Usage: %s port [push_path]\n", argv[0]);
+    return 1;
+  }
+
+  if (argc > 2 && argv[2][0] != '/') {
+    fprintf(stderr, "push_path should start with '/'\n");
     return 1;
   }
 
@@ -671,7 +682,7 @@ int main(int argc, char const *argv[]) {
         if (i > maxfd)
           maxfd = i;
         FD_SET(i, &readset);
-        if (state[i]->writing) {
+        if (state[i]->writting) {
           FD_SET(i, &writeset);
         }
       }

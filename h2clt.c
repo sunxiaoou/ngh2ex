@@ -15,6 +15,7 @@
 typedef struct {
   unsigned int upgrade_response_status;
   int sock;
+  int writting;
   int stream_id;
   nghttp2_session *session;
 } http2_session_data;
@@ -317,9 +318,7 @@ static int on_data_chunk_recv_callback(nghttp2_session *session, uint8_t flags,
   (void)session;
   (void)flags;
 
-  if (session_data->stream_id == stream_id) {
-    HEXDUMP(data, len);
-  }
+  fprintf(stderr, "%.*s\n", (int)len, data);
 
   PRINT(log_out, "on_data_chunk_callback")
   return 0;
@@ -395,6 +394,7 @@ static int session_send(http2_session_data *psession, int sock) {
       break;
     if (len < 0) {
       fprintf(stderr, "nghttp2_session_mem_send returns error(%s)", nghttp2_strerror(len));
+      PRINT(log_out, "session_send")
       return -1;
     }
     HEXDUMP(sndbuf, len);
@@ -404,30 +404,42 @@ static int session_send(http2_session_data *psession, int sock) {
 
   if (nghttp2_session_want_read(psession->session) == 0 &&
       nghttp2_session_want_write(psession->session) == 0) {
-    PRINT(log_out, "session_send")
+    PRINT(log_out, "session_send2")
     return -1;
   }
 
-  PRINT(log_out, "session_send2")
+  psession->writting = 0;
+
+  PRINT(log_out, "session_send3")
   return 0;
 }
 
 static int session_receive(http2_session_data *psession, int sock) {
   PRINT(log_in, "session_receive")
 
-  unsigned char rcvbuf[1024];
+  unsigned char buf[1024];
+  int len;
 
-  int len = read(sock, rcvbuf, sizeof(rcvbuf));
-  HEXDUMP(rcvbuf, len);
-  PRINT(log_in, "nghttp2_session_mem_recv")
-  len = nghttp2_session_mem_recv(psession->session, (uint8_t *)rcvbuf, len);
-  PRINT(log_out, "nghttp2_session_mem_recv")
+  len = read(sock, buf, sizeof(buf));
   if (len < 0) {
-    fprintf(stderr, "Recevied negative error : %s", nghttp2_strerror(len));
+    perror("read failed");
+    PRINT(log_out, "session_receive")
     return -1;
   }
 
-  PRINT(log_out, "session_receive")
+  HEXDUMP(buf, len);
+  PRINT(log_in, "nghttp2_session_mem_recv")
+  len = nghttp2_session_mem_recv(psession->session, (uint8_t *)buf, len);
+  PRINT(log_out, "nghttp2_session_mem_recv")
+  if (len < 0) {
+    fprintf(stderr, "Recevied negative error : %s", nghttp2_strerror(len));
+    PRINT(log_out, "session_receive2")
+    return -1;
+  }
+
+  psession->writting = 1;
+
+  PRINT(log_out, "session_receive3")
   return 0;
 }
 
@@ -465,10 +477,11 @@ int main(int argc, char *argv[])
     fprintf(stderr, "Could not connect to %s:%d\n", host, port);
     return -1;
   }
+  // fcntl(sock, F_SETFL, O_NONBLOCK);
 
   nghttp2_settings_entry iv[] = {
-    {NGHTTP2_SETTINGS_MAX_CONCURRENT_STREAMS, 100}
-    // {NGHTTP2_SETTINGS_ENABLE_PUSH, 0}
+    {NGHTTP2_SETTINGS_MAX_CONCURRENT_STREAMS, 100},
+    {NGHTTP2_SETTINGS_ENABLE_PUSH, 1}
   };
   unsigned char settings[128];
   int len = nghttp2_pack_settings_payload(settings, sizeof(settings), iv, sizeof(iv) / sizeof(*iv));
@@ -525,14 +538,23 @@ int main(int argc, char *argv[])
   session_send(&h2session, sock);
 
   int maxfd = sock + 1;
-  fd_set rset;
-  FD_ZERO(&rset);
+  fd_set rset, wset;
+
   while (1) {
+    FD_ZERO(&rset);
+    FD_ZERO(&wset);
     FD_SET(sock, &rset);
-    select(maxfd, &rset, NULL, NULL, NULL);
+    if (h2session.writting) {
+      FD_SET(sock, &wset);
+    }
+    select(maxfd, &rset, &wset, NULL, NULL);
     if (FD_ISSET(sock, &rset)) {
-      session_receive(&h2session, sock);
-      if (session_send(&h2session, sock) < 0)
+      rc = session_receive(&h2session, sock);
+    }
+
+    if (rc == 0 && FD_ISSET(sock, &wset)) {
+      rc = session_send(&h2session, sock);
+      if (rc < 0)
         break;
     }
   }
