@@ -17,6 +17,7 @@ typedef struct {
   int sock;
   int writting;
   int stream_id;
+  int promise_id;
   nghttp2_session *session;
 } http2_session_data;
 
@@ -139,11 +140,18 @@ static int on_begin_headers_callback(nghttp2_session *session,
   (void)session;
 
   switch (frame->hd.type) {
-  case NGHTTP2_HEADERS:
-    if (frame->headers.cat == NGHTTP2_HCAT_RESPONSE && session_data->stream_id == frame->hd.stream_id) {
-      fprintf(stderr, "Response headers for stream ID=%d:\n", frame->hd.stream_id);
+    case NGHTTP2_HEADERS: {
+      if (frame->headers.cat == NGHTTP2_HCAT_RESPONSE && session_data->stream_id == frame->hd.stream_id) {
+        fprintf(stderr, "Response headers for stream ID=%d:\n", frame->hd.stream_id);
+      }
+      break;
     }
-    break;
+
+    case NGHTTP2_PUSH_PROMISE: {
+      session_data->promise_id = frame->push_promise.promised_stream_id;
+      fprintf(stderr, "Promise stream ID (%d)\n", session_data->promise_id);
+      break;
+    }
   }
 
   PRINT(log_out, "on_begin_headers_callback")
@@ -335,8 +343,8 @@ static int on_stream_close_callback(nghttp2_session *session, int32_t stream_id,
   http2_session_data *session_data = (http2_session_data *)user_data;
   int rv;
 
-  if (session_data->stream_id == stream_id) {
-    fprintf(stderr, "Stream %d closed with error_code=%u\n", stream_id, error_code);
+  fprintf(stderr, "Stream %d closed with error_code=%u\n", stream_id, error_code);
+  if (session_data->promise_id == 0 || session_data->promise_id == stream_id) {
     PRINT(log_still, "nghttp2_session_terminate_session")
     rv = nghttp2_session_terminate_session(session, NGHTTP2_NO_ERROR);
     if (rv != 0) {
