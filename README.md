@@ -30,3 +30,9 @@ Response headers for stream ID=1:
 All headers received
 Stream 1 closed with error_code=0
 <html><head><title>404</title></head><body><h1>404 Not Found</h1></body></html>
+
+
+h2c client / server sample
+$ make h2clt h2svr
+$ h2svr 12978 /style.css		# start server (optionally push file style.css)
+$ h2clt http://localhost:12978/ # start client from another terminal (need setenv as well)
