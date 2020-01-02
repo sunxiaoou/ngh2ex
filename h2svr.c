@@ -1,4 +1,5 @@
 // A sample of a nghttp2 server without security
+#include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -27,8 +28,8 @@
 
 typedef struct http2_stream_data {
   struct http2_stream_data *prev, *next;
-  char *uri;
-  char *authority;
+  char uri[256];
+  char authority[128];
   int32_t id;
   int fd;
 } http2_stream_data;
@@ -36,14 +37,13 @@ typedef struct http2_stream_data {
 typedef struct http2_session_data {
   // char *client_addr;
   const char *push_path;
-  char uri[256];
-  char authority[128];
   http2_stream_data root;
   nghttp2_session *session;
 } http2_session_data;
 
 typedef struct fd_state {
     int writting;
+    int upgraded;
     http2_session_data h2session;
 } fd_state;
 
@@ -120,7 +120,7 @@ static int htp_uricb(http_parser *htp, const char *data, size_t len) {
   PRINT(log_in, "htp_uricb")
   fprintf(stderr, "method(%d)\n", htp->method);
   fprintf(stderr, "uri(%.*s)\n", (int)len, data);
-  http2_session_data *p = htp->data;
+  http2_stream_data *p = htp->data;
   strncpy(p->uri, data, len);
   PRINT(log_out, "htp_uricb")
   return 0;
@@ -129,7 +129,7 @@ static int htp_uricb(http_parser *htp, const char *data, size_t len) {
 static int htp_hdr_keycb(http_parser *htp, const char *data, size_t len) {
   fprintf(stderr, "hdr_key(%.*s)\n", (int)len, data);
   if (! strncmp(data, "host", len)) {
-    http2_session_data *p = htp->data;
+    http2_stream_data *p = htp->data;
     strncpy(p->authority, data, len);
   }
   return 0;
@@ -137,7 +137,7 @@ static int htp_hdr_keycb(http_parser *htp, const char *data, size_t len) {
 
 static int htp_hdr_valcb(http_parser *htp, const char *data, size_t len) {
   fprintf(stderr, "hdr_val(%.*s)\n", (int)len, data);
-  http2_session_data *p = htp->data;
+  http2_stream_data *p = htp->data;
   if (! strncmp(p->authority, "host", len)) {
     strncpy(p->authority, data, len);
   }
@@ -158,7 +158,7 @@ static int htp_msg_completecb(http_parser *htp) {
   return 0;
 }
 
-static int parse_htp(http2_session_data *session_data, char *buffer, int buflen) {
+static int parse_htp(http2_stream_data *stream_data, char *buffer, int buflen) {
   PRINT(log_in, "parse_htp")
 
   http_parser_settings parser_settings = {
@@ -173,7 +173,7 @@ static int parse_htp(http2_session_data *session_data, char *buffer, int buflen)
   };
 
   http_parser parser;
-  parser.data = session_data;
+  parser.data = stream_data;
   http_parser_init(&parser, HTTP_REQUEST);
   http_parser_execute(&parser, &parser_settings, buffer, buflen);
 
@@ -383,57 +383,58 @@ static int check_path(const char *path) {
          !ends_with(path, "/..") && !ends_with(path, "/.");
 }
 
-static int on_request_recv(http2_session_data *session_data, http2_stream_data *stream_data) {
+static int on_request_recv(http2_session_data *session_data) {
   PRINT(log_in, "on_request_recv")
 
   int fd;
   nghttp2_nv hdrs[] = {MAKE_NV2(":status", "200")};
   const char *rel_path;
+  http2_stream_data *stream_data = session_data->root.next;
 
   if (session_data->push_path) {
     int id = submit_push_promise(session_data->session, stream_data, session_data->push_path);
     if (id < 0) {
-      PRINT(log_out, "on_request_recv2")
+      PRINT(log_out, "on_request_recv")
       return NGHTTP2_ERR_CALLBACK_FAILURE;
     }
 
     http2_stream_data *promise = create_http2_stream_data(session_data, id);
-    promise->authority = session_data->authority;
+    strcpy(promise->authority, stream_data->authority);
 
     for (rel_path = session_data->push_path; *rel_path == '/'; ++rel_path)
       ;
     fd = open(rel_path, O_RDONLY);
     if (fd == -1) {
-      PRINT(log_out, "on_request_recv3")
+      PRINT(log_out, "on_request_recv2")
       return NGHTTP2_ERR_CALLBACK_FAILURE;
     }
     promise->fd = fd;
 
     if (submit_response(session_data->session, id, hdrs, ARRLEN(hdrs), fd) != 0) {
       close(fd);
-      PRINT(log_out, "on_request_recv4")
+      PRINT(log_out, "on_request_recv3")
       return NGHTTP2_ERR_CALLBACK_FAILURE;
     }
   }
 
-  if (! stream_data->uri) {
+  if (! stream_data->uri[0]) {
     if (error_reply(session_data->session, stream_data) != 0) {
-      PRINT(log_out, "on_request_recv5")
+      PRINT(log_out, "on_request_recv4")
       return NGHTTP2_ERR_CALLBACK_FAILURE;
     }
 
-    PRINT(log_out, "on_request_recv6")
+    PRINT(log_out, "on_request_recv5")
     return 0;
   }
 
   fprintf(stderr, "GET %s\n", stream_data->uri);
   if (! check_path(stream_data->uri)) {
     if (error_reply(session_data->session, stream_data) != 0) {
-      PRINT(log_out, "on_request_recv7")
+      PRINT(log_out, "on_request_recv6")
       return NGHTTP2_ERR_CALLBACK_FAILURE;
     }
 
-    PRINT(log_out, "on_request_recv8")
+    PRINT(log_out, "on_request_recv7")
     return 0;
   }
   for (rel_path = stream_data->uri; *rel_path == '/'; ++rel_path)
@@ -441,51 +442,178 @@ static int on_request_recv(http2_session_data *session_data, http2_stream_data *
   fd = open(rel_path, O_RDONLY);
   if (fd == -1) {
     if (error_reply(session_data->session, stream_data) != 0) {
-      PRINT(log_out, "on_request_recv9")
+      PRINT(log_out, "on_request_recv8")
       return NGHTTP2_ERR_CALLBACK_FAILURE;
     }
 
-    PRINT(log_out, "on_request_recv10")
+    PRINT(log_out, "on_request_recv9")
     return 0;
   }
   stream_data->fd = fd;
 
   if (submit_response(session_data->session, stream_data->id, hdrs, ARRLEN(hdrs), fd) != 0) {
     close(fd);
-    PRINT(log_out, "on_request_recv7")
+    PRINT(log_out, "on_request_recv10")
     return NGHTTP2_ERR_CALLBACK_FAILURE;
   }
 
-  PRINT(log_out, "on_request_recv8")
+  PRINT(log_out, "on_request_recv11")
   return 0;
 }
 
 static int on_begin_headers_callback(nghttp2_session *session,
                                      const nghttp2_frame *frame,
                                      void *user_data) {
-  PRINT(log_still, "on_begin_headers_callback")
+  PRINT(log_in, "on_begin_headers_callback")
+
+  http2_session_data *session_data = (http2_session_data *)user_data;
+  http2_stream_data *stream_data = create_http2_stream_data(session_data, frame->hd.stream_id);
+  PRINT(log_still, "nghttp2_session_set_stream_user_data")
+  nghttp2_session_set_stream_user_data(session, frame->hd.stream_id, stream_data);
+
+  PRINT(log_out, "on_begin_headers_callback")
   return 0;
+}
+
+
+/* Returns int value of hex string character |c| */
+static uint8_t hex_to_uint(uint8_t c) {
+  if ('0' <= c && c <= '9') {
+    return (uint8_t)(c - '0');
+  }
+  if ('A' <= c && c <= 'F') {
+    return (uint8_t)(c - 'A' + 10);
+  }
+  if ('a' <= c && c <= 'f') {
+    return (uint8_t)(c - 'a' + 10);
+  }
+  return 0;
+}
+
+/* Decodes percent-encoded byte string |value| with length |valuelen|
+   and returns the decoded byte string in allocated buffer. The return
+   value is NULL terminated. The caller must free the returned
+   string. */
+static char *percent_decode(const uint8_t *value, size_t valuelen) {
+  char *res;
+
+  res = malloc(valuelen + 1);
+  if (valuelen > 3) {
+    size_t i, j;
+    for (i = 0, j = 0; i < valuelen - 2;) {
+      if (value[i] != '%' || !isxdigit(value[i + 1]) ||
+          !isxdigit(value[i + 2])) {
+        res[j++] = (char)value[i++];
+        continue;
+      }
+      res[j++] =
+          (char)((hex_to_uint(value[i + 1]) << 4) + hex_to_uint(value[i + 2]));
+      i += 3;
+    }
+    memcpy(&res[j], &value[i], 2);
+    res[j + 2] = '\0';
+  } else {
+    memcpy(res, value, valuelen);
+    res[valuelen] = '\0';
+  }
+  return res;
 }
 
 static int on_header_callback(nghttp2_session *session,
                               const nghttp2_frame *frame, const uint8_t *name,
                               size_t namelen, const uint8_t *value,
                               size_t valuelen, uint8_t flags, void *user_data) {
-  PRINT(log_still, "on_header_callback")
+  PRINT(log_in, "on_header_callback")
+
+  http2_stream_data *stream_data;
+  const char PATH[] = ":path";
+  const char AUTHORITY[] = ":authority";
+  (void)flags;
+  (void)user_data;
+
+  switch (frame->hd.type) {
+  case NGHTTP2_HEADERS:
+    if (frame->headers.cat != NGHTTP2_HCAT_REQUEST) {
+      break;
+    }
+
+    PRINT(log_still, "nghttp2_session_get_stream_user_data")
+    stream_data = nghttp2_session_get_stream_user_data(session, frame->hd.stream_id);
+
+    if (namelen == sizeof(AUTHORITY) - 1 && ! memcmp(AUTHORITY, name, namelen)) {
+      size_t j;
+      for (j = 0; j < valuelen && value[j] != '?'; ++j)
+        ;
+      strcpy(stream_data->authority, percent_decode(value, j));
+    } else if (namelen == sizeof(PATH) - 1 && ! memcmp(PATH, name, namelen)) {
+      size_t j;
+      for (j = 0; j < valuelen && value[j] != '?'; ++j)
+        ;
+      strcpy(stream_data->uri, percent_decode(value, j));
+    }
+    break;
+  }
+
+  PRINT(log_out, "on_header_callback")
   return 0;
 }
 
 static int on_frame_recv_callback(nghttp2_session *session,
                                   const nghttp2_frame *frame, void *user_data) {
-  PRINT(log_still, "on_frame_recv_callback")
+  PRINT(log_in, "on_frame_recv_callback")
+
+  http2_session_data *session_data = (http2_session_data *)user_data;
+  http2_stream_data *stream_data;
+  switch (frame->hd.type) {
+  case NGHTTP2_DATA:
+  case NGHTTP2_HEADERS:
+    /* Check that the client request has finished */
+    if (frame->hd.flags & NGHTTP2_FLAG_END_STREAM) {
+      PRINT(log_still, "nghttp2_session_get_stream_user_data")
+      stream_data =
+          nghttp2_session_get_stream_user_data(session, frame->hd.stream_id);
+      /* For DATA and HEADERS frame, this callback may be called after
+         on_stream_close_callback. Check that stream still alive. */
+      if (!stream_data) {
+        PRINT(log_out, "on_frame_recv_callback")
+        return 0;
+      }
+
+      int rc = on_request_recv(session_data);
+      PRINT(log_out, "on_frame_recv_callback2")
+      return rc;
+    }
+    break;
+  default:
+    break;
+  }
+
+  PRINT(log_out, "on_frame_recv_callback3")
   return 0;
 }
 
 static int on_stream_close_callback(nghttp2_session *session, int32_t stream_id,
                                     uint32_t error_code, void *user_data) {
-  PRINT(log_still, "on_stream_close_callback")
+  PRINT(log_in, "on_stream_close_callback")
+
+  http2_session_data *session_data = (http2_session_data *)user_data;
+  http2_stream_data *stream_data;
+  (void)error_code;
+
+  PRINT(log_still, "nghttp2_session_get_stream_user_data")
+  stream_data = nghttp2_session_get_stream_user_data(session, stream_id);
+  if (!stream_data) {
+    PRINT(log_out, "on_stream_close_callback")
+    return 0;
+  }
+  remove_stream(stream_data);
+  delete_http2_stream_data(stream_data);
+
+  PRINT(log_out, "on_stream_close_callback2")
   return 0;
 }
+
+nghttp2_settings_entry iv[] = {{NGHTTP2_SETTINGS_MAX_CONCURRENT_STREAMS, 100}};
 
 static int initialize_h2session(http2_session_data *session_data) {
   PRINT(log_in, "initialize_h2session")
@@ -502,8 +630,6 @@ static int initialize_h2session(http2_session_data *session_data) {
   nghttp2_session_server_new(&session_data->session, callbacks, session_data);
   nghttp2_session_callbacks_del(callbacks);
 
-  nghttp2_settings_entry iv[] = {{NGHTTP2_SETTINGS_MAX_CONCURRENT_STREAMS, 100}};
-
   PRINT(log_still, "nghttp2_submit_settings")
   int rc = nghttp2_submit_settings(session_data->session, NGHTTP2_FLAG_NONE, iv, ARRLEN(iv));
   if (rc != 0) {
@@ -512,27 +638,13 @@ static int initialize_h2session(http2_session_data *session_data) {
     return -1;
   }
 
-  unsigned char settings[128];
-  int len = nghttp2_pack_settings_payload(settings, sizeof(settings), iv, ARRLEN(iv));
-  if (len <= 0) {
-    fprintf(stderr, "Could not pack SETTINGS: %s\n", nghttp2_strerror(len));
-    PRINT(log_out, "initialize_h2session2")
-    return -1;
-  }
-
-  PRINT(log_still, "nghttp2_session_upgrade2")
-  rc = nghttp2_session_upgrade2(session_data->session, settings, len, 0, NULL);
-  if (rc != 0) {
-    fprintf(stderr, "nghttp2_session_upgrade returned error(%s)\n", nghttp2_strerror(rc));
-    PRINT(log_out, "initialize_h2session3")
-    return -1;
-  }
-
-  PRINT(log_out, "initialize_h2session4")
+  PRINT(log_out, "initialize_h2session2")
   return 0;
 }
 
 #define BUFSIZE 1024
+static const char MAGIC[] = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
+
 static int do_read(int sock, struct fd_state *state) {
   PRINT(log_in, "do_read")
 
@@ -553,29 +665,66 @@ static int do_read(int sock, struct fd_state *state) {
   HEXDUMP(buf, len)
 
   int rc;
-  if (state->h2session.session == NULL) {
-    rc = parse_htp(&state->h2session, buf, len);
+  if (! state->upgraded) {
+    rc = initialize_h2session(&state->h2session);
     if (rc < 0) {
       PRINT(log_out, "do_read3")
       return -1;
     }
-  } else {
-    PRINT(log_in, "nghttp2_session_mem_recv")
-    rc = nghttp2_session_mem_recv(state->h2session.session, (unsigned char *)buf, len);
-    PRINT(log_out, "nghttp2_session_mem_recv")
-    if (rc < 0) {
-      fprintf(stderr, "Recevied negative error(%s)\n", nghttp2_strerror(rc));
-      PRINT(log_out, "do_read4")
-      return -1;
+
+    if (strncmp(buf, MAGIC, sizeof(MAGIC))) {
+      http2_stream_data *stream_data = create_http2_stream_data(&state->h2session, 1);
+
+      rc = parse_htp(stream_data, buf, len);
+      if (rc < 0) {
+        PRINT(log_out, "do_read4")
+        return -1;
+      }
+
+      state->writting = 1;
+      PRINT(log_out, "do_read5")
+      return 0;
+    } else {
+      state->upgraded = 1;
     }
   }
 
+  PRINT(log_in, "nghttp2_session_mem_recv")
+  rc = nghttp2_session_mem_recv(state->h2session.session, (unsigned char *)buf, len);
+  PRINT(log_out, "nghttp2_session_mem_recv")
+  if (rc < 0) {
+    fprintf(stderr, "Recevied negative error(%s)\n", nghttp2_strerror(rc));
+    PRINT(log_out, "do_read6")
+    return -1;
+  }
   state->writting = 1;
 
-  PRINT(log_out, "do_read5")
+  PRINT(log_out, "do_read7")
   return 0;
 }
 
+static int upgrade_session(http2_session_data *session_data) {
+  PRINT(log_in, "upgrade_session")
+
+  unsigned char settings[128];
+  int len = nghttp2_pack_settings_payload(settings, sizeof(settings), iv, ARRLEN(iv));
+  if (len <= 0) {
+    fprintf(stderr, "Could not pack SETTINGS: %s\n", nghttp2_strerror(len));
+    PRINT(log_out, "upgrade_session")
+    return -1;
+  }
+
+  PRINT(log_still, "nghttp2_session_upgrade2")
+  int rc = nghttp2_session_upgrade2(session_data->session, settings, len, 0, NULL);
+  if (rc != 0) {
+    fprintf(stderr, "nghttp2_session_upgrade returned error(%s)\n", nghttp2_strerror(rc));
+    PRINT(log_out, "upgrade_session2")
+    return -1;
+  }
+
+  PRINT(log_out, "upgrade_session3")
+  return 0;
+}
 
 static const char SWITCHING[] =
         "HTTP/1.1 101 Switching Protocols\r\n"
@@ -590,7 +739,7 @@ static int do_write(int sock, struct fd_state *state) {
   int len;
   const unsigned char *sndbuf;
 
-  if (state->h2session.session == NULL) {
+  if (! state->upgraded) {
     len = strlen(SWITCHING);
     HEXDUMP(SWITCHING, len);
     rc = write(sock, SWITCHING, len);
@@ -600,20 +749,19 @@ static int do_write(int sock, struct fd_state *state) {
       return -1;
     }
 
-    rc = initialize_h2session(&state->h2session);
-    if (rc < 0) {
-      PRINT(log_out, "do_write2")
-      return -1;
-    }
-
-    http2_stream_data *stream_data = create_http2_stream_data(&state->h2session, 1);
-    stream_data->uri = state->h2session.uri;
-    stream_data->authority = state->h2session.authority;
-    rc = on_request_recv(&state->h2session, stream_data);
+    rc = upgrade_session(&state->h2session);
     if (rc < 0) {
       PRINT(log_out, "do_write3")
       return -1;
     }
+
+    rc = on_request_recv(&state->h2session);
+    if (rc < 0) {
+      PRINT(log_out, "do_write4")
+      return -1;
+    }
+
+    state->upgraded = 1;
   } else {
     while(1) {
       PRINT(log_in, "nghttp2_session_mem_send")
@@ -623,27 +771,27 @@ static int do_write(int sock, struct fd_state *state) {
         break;
       if (rc < 0) {
         fprintf(stderr, "nghttp2_session_mem_send returns error(%s)\n", nghttp2_strerror(rc));
-        PRINT(log_out, "do_write4")
+        PRINT(log_out, "do_write5")
         return -1;
       }
       HEXDUMP(sndbuf, rc);
       rc = write(sock, sndbuf, rc);
       if (rc < 0) {
         perror("write failed");
-        PRINT(log_out, "do_write5")
+        PRINT(log_out, "do_write6")
         return -1;
       }
     }
 
     if (nghttp2_session_want_read(state->h2session.session) == 0 &&
         nghttp2_session_want_write(state->h2session.session) == 0) {
-      PRINT(log_out, "do_write6")
+      PRINT(log_out, "do_write7")
       return -1;
     }
   }
 
   state->writting = 0;
-  PRINT(log_out, "do_write7")
+  PRINT(log_out, "do_write8")
   return 0;
 }
 
