@@ -506,9 +506,15 @@ int main(int argc, char *argv[])
   fprintf(stderr, "written(%d)\n", rc);
 
   /* receive 101 switching protocols */
-  char rcvbuf[1024] = {0};
-  rc = read(sock, rcvbuf, sizeof(rcvbuf));
-  HEXDUMP(rcvbuf, rc);
+  char switching[] =
+          "HTTP/1.1 101 Switching Protocols\r\n"
+          "Connection: Upgrade\r\n"
+          "Upgrade: " NGHTTP2_CLEARTEXT_PROTO_VERSION_ID "\r\n"
+          "\r\n";
+
+  /* don't read following settings, note switching has no '\0' */
+  rc = read(sock, switching, sizeof(switching) - 1);
+  HEXDUMP(switching, rc);
   fprintf(stderr, "read(%d)\n", rc);
 
   http_parser_settings parser_settings = {
@@ -526,7 +532,7 @@ int main(int argc, char *argv[])
   http2_session_data h2session;
   parser.data = &h2session;
 
-  rc = http_parser_execute(&parser, &parser_settings, rcvbuf, rc);
+  rc = http_parser_execute(&parser, &parser_settings, switching, rc);
   int htperr = parser.http_errno;
   if (htperr != HPE_OK) {
     fprintf(stderr, "Failed to parse HTTP Upgrade response header %s\n:", http_errno_name(htperr));
