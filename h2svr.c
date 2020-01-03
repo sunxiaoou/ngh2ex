@@ -47,6 +47,8 @@ typedef struct fd_state {
     http2_session_data h2session;
 } fd_state;
 
+int Port;
+
 static int listen_(int port, int nlisten) {
   PRINT(log_in, "listen_")
 
@@ -244,6 +246,11 @@ static void delete_http2_stream_data(http2_stream_data *stream_data) {
 static int submit_push_promise(nghttp2_session *session, http2_stream_data *stream_data,
         const char *push_path) {
   PRINT(log_in, "submit_push_promise")
+
+  if (! stream_data->authority[0]) {
+    memset(stream_data->authority, 0, sizeof(stream_data->authority));
+    sprintf(stream_data->authority, "localhost:%d", Port);
+  }
 
   nghttp2_nv hdrs[] = {
     MAKE_NV2(":method", "GET"),
@@ -808,7 +815,8 @@ int main(int argc, char const *argv[]) {
 
   PRINT(log_in, "main")
 
-  int listener = listen_(atoi(argv[1]), 3);
+  Port = atoi(argv[1]);
+  int listener = listen_(Port, 3);
   if (listener < 0) {
     PRINT(log_out, "main")
     return -1;
