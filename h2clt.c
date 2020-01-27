@@ -98,14 +98,6 @@ static int parser_completecb(http_parser *parser) {
   return 0;
 }
 
-static void print_header(FILE *f, const uint8_t *name, size_t namelen,
-                         const uint8_t *value, size_t valuelen) {
-  fwrite(name, 1, namelen, f);
-  fprintf(f, ": ");
-  fwrite(value, 1, valuelen, f);
-  fprintf(f, "\n");
-}
-
 static int on_header_callback(nghttp2_session *session,
                               const nghttp2_frame *frame, const uint8_t *name,
                               size_t namelen, const uint8_t *value,
@@ -118,9 +110,16 @@ static int on_header_callback(nghttp2_session *session,
 
   switch (frame->hd.type) {
   case NGHTTP2_HEADERS:
-    if (frame->headers.cat == NGHTTP2_HCAT_RESPONSE && session_data->stream_id == frame->hd.stream_id) {
-      /* Print response headers for the initiated request. */
-      print_header(stderr, name, namelen, value, valuelen);
+    if (frame->headers.cat == NGHTTP2_HCAT_RESPONSE ||
+            frame->headers.cat == NGHTTP2_HCAT_PUSH_RESPONSE) {
+      fprintf(stderr, "stream(%d) %.*s: %.*s\n",
+              frame->hd.stream_id, (int)namelen, name, (int)valuelen, value);
+      break;
+    }
+    case NGHTTP2_PUSH_PROMISE:
+    if (frame->headers.cat == NGHTTP2_HCAT_REQUEST) {
+      fprintf(stderr, "stream(%d) %.*s: %.*s\n",
+              frame->hd.stream_id, (int)namelen, name, (int)valuelen, value);
       break;
     }
   }
@@ -506,14 +505,8 @@ int main(int argc, char *argv[])
   fprintf(stderr, "written(%d)\n", rc);
 
   /* receive 101 switching protocols */
-  char switching[] =
-          "HTTP/1.1 101 Switching Protocols\r\n"
-          "Connection: Upgrade\r\n"
-          "Upgrade: " NGHTTP2_CLEARTEXT_PROTO_VERSION_ID "\r\n"
-          "\r\n";
-
-  /* don't read following settings, note switching has no '\0' */
-  rc = read(sock, switching, sizeof(switching) - 1);
+  char switching[1024] = {0};
+  rc = read(sock, switching, sizeof(switching));
   HEXDUMP(switching, rc);
   fprintf(stderr, "read(%d)\n", rc);
 
