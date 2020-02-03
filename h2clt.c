@@ -508,7 +508,15 @@ int main(int argc, char *argv[])
   char switching[1024] = {0};
   rc = read(sock, switching, sizeof(switching));
   HEXDUMP(switching, rc);
-  fprintf(stderr, "read(%d)\n", rc);
+
+  /* if received extra content than switching */
+  int elen = 0;
+  char *extra = strstr(switching, "\r\n\r\n");
+  if (extra) {
+    extra += 4;
+    elen = rc - (extra - switching);
+    fprintf(stderr, "elen(%d)\n", elen);
+  }
 
   http_parser_settings parser_settings = {
     NULL,              // http_cb      on_message_begin;
@@ -543,6 +551,16 @@ int main(int argc, char *argv[])
   /* send magic with settings */
   initialize_nghttp2_session(&h2session, settings, len);
   session_send(&h2session, sock);
+
+  if (elen) {
+    len = nghttp2_session_mem_recv(h2session.session, (uint8_t *)extra, elen);
+    PRINT(log_out, "nghttp2_session_mem_recv")
+    if (len < 0) {
+      fprintf(stderr, "Recevied negative error : %s", nghttp2_strerror(len));
+      return -1;
+    }
+    h2session.writting = 1;
+  }
 
   int maxfd = sock + 1;
   fd_set rset, wset;
